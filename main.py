@@ -12,10 +12,10 @@ from fastapi.security.api_key import APIKeyHeader
 # from auth import s3_auth_required  # 暂时移除S3验证
 
 from config import settings
-from models import NotionIdType, NotionObject, NotionFile, NotionFolder, S3ListObjectsResponse, S3Error
+from models import NotionIdType, NotionObject, NotionFile, NotionFolder, S3ListObjectsResponse, S3Error, S3Object
 from notion_api_client import NotionAPI
 from s3_adapter import S3Adapter
-from utils import detect_notion_id_type, decode_url_encoding, format_datetime_for_browser
+from utils import detect_notion_id_type, decode_url_encoding, format_datetime_for_browser, generate_etag
 
 app = FastAPI(
     title="Notion S3 API",
@@ -261,16 +261,53 @@ async def list_bucket_objects(
 
     # 过滤内容，移除不需要的条目
     filtered_contents = []
+    common_prefixes = set()
+
     for obj in response.Contents:
         # 过滤掉与 bucket 名称相同的 key
         if obj.Key == bucket:
             continue
 
-        # 如果没有使用 delimiter，过滤掉以斜杠结尾的文件夹条目
-        if not decoded_delimiter and obj.Key.endswith('/'):
+        # 处理文件夹
+        if obj.Key.endswith('/'):
+            # 如果是文件夹，添加到公共前缀集合
+            folder_name = obj.Key.rstrip('/')
+
+            # 提取顶级文件夹
+            if '/' in folder_name:
+                # 如果是子文件夹，提取顶级文件夹
+                top_folder = folder_name.split('/', 1)[0] + '/'
+                common_prefixes.add(top_folder)
+            else:
+                # 如果是顶级文件夹，直接添加
+                common_prefixes.add(obj.Key)
             continue
 
+        # 处理文件
+        if '/' in obj.Key:
+            # 如果文件在文件夹中，添加顶级文件夹前缀
+            top_folder = obj.Key.split('/', 1)[0] + '/'
+            common_prefixes.add(top_folder)
+
+            # 如果没有使用 delimiter，不显示文件夹中的文件
+            if not decoded_delimiter:
+                continue
+
         filtered_contents.append(obj)
+
+    # 添加公共前缀作为文件夹
+    # 即使没有使用 delimiter，也添加顶级文件夹
+    for prefix in common_prefixes:
+        # 创建一个表示文件夹的对象
+        folder_obj = S3Object(
+            Key=prefix,
+            LastModified=datetime.now(),
+            ETag=f'"{generate_etag(prefix)}"',
+            Size=0,  # 文件夹大小为0
+            StorageClass="STANDARD",
+            Owner={"DisplayName": "notion-s3-api"}
+        )
+        filtered_contents.append(folder_obj)
 
     # 替换原始内容
     response.Contents = filtered_contents
