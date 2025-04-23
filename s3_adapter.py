@@ -19,6 +19,26 @@ class S3Adapter:
         self.folders: Dict[str, Dict[str, Any]] = {}
         self.files: Dict[str, Dict[str, Any]] = {}
 
+        # 缓存
+        self.cache = {}
+
+    def log(self, message, is_step=False, is_success=False, is_error=False, indent=0):
+        """输出日志"""
+        prefix = "  " * indent
+        if is_step:
+            prefix += "\033[1;34m[S3]\033[0m "
+        elif is_success:
+            prefix += "\033[1;32m[S3_OK]\033[0m "
+        elif is_error:
+            prefix += "\033[1;31m[S3_ERROR]\033[0m "
+        else:
+            prefix += "\033[1;36m[S3_INFO]\033[0m "
+
+        print(f"{prefix}{message}")
+
+        # 缓存
+        self.cache = {}
+
     def _get_s3_object_from_notion_file(self, file: NotionFile, prefix: str = "") -> S3Object:
         """Convert a NotionFile to an S3Object"""
         key = generate_s3_key(file.id, prefix, file.name)
@@ -51,33 +71,43 @@ class S3Adapter:
         notion_folders: Dict[str, NotionFolder],
         notion_files: List[NotionFile]
     ) -> None:
-        """Update the S3 adapter with data from Notion"""
-        # Clear existing data
+        """从 Notion 数据更新 S3 适配器"""
+        self.log("\n开始更新 S3 适配器...", is_step=True)
+        start_time = datetime.now()
+
+        # 清除现有数据
         self.objects = {}
         self.folders = {}
         self.files = {}
+        self.cache = {}  # 清除缓存
 
-        # Add objects
+        # 添加对象
+        self.log(f"添加 {len(notion_objects)} 个 Notion 对象", is_step=True)
         for obj_id, obj in notion_objects.items():
             self.objects[obj_id] = obj.dict()
 
-        # Add folders
+        # 添加文件夹
+        self.log(f"添加 {len(notion_folders)} 个文件夹", is_step=True)
         for folder_id, folder in notion_folders.items():
             self.folders[folder_id] = folder.dict()
 
-            # Create S3 object for folder
+            # 为文件夹创建 S3 对象
             s3_obj = self._get_s3_object_from_notion_folder(folder)
             key = s3_obj.Key
 
             if key not in self.objects:
                 self.objects[key] = s3_obj.dict()
 
-        # Add files
-        for file in notion_files:
+        # 添加文件
+        self.log(f"添加 {len(notion_files)} 个文件", is_step=True)
+        for i, file in enumerate(notion_files):
+            if i % 10 == 0 and i > 0:
+                self.log(f"已处理 {i}/{len(notion_files)} 个文件", indent=1)
+
             file_id = file.id
             self.files[file_id] = file.dict()
 
-            # Find parent folder
+            # 找到父文件夹
             parent_id = file.parent_id
             prefix = ""
 
@@ -85,26 +115,42 @@ class S3Adapter:
                 folder = NotionFolder(**self.folders[parent_id])
                 prefix = generate_s3_key(folder.id, "", folder.name + "/")
 
-            # Create S3 object for file
+            # 为文件创建 S3 对象
             s3_obj = self._get_s3_object_from_notion_file(file, prefix)
             key = s3_obj.Key
 
             if key not in self.objects:
                 self.objects[key] = s3_obj.dict()
 
+        end_time = datetime.now()
+        duration = (end_time - start_time).total_seconds()
+        self.log(f"S3 适配器更新完成，耗时 {duration:.2f} 秒", is_success=True)
+
     async def list_objects(self, bucket_name: str, prefix: str = "", delimiter: str = "", max_keys: int = 1000) -> S3ListObjectsResponse:
         """列出 S3 存储桶中的对象"""
+        self.log(f"\n列出存储桶 {bucket_name} 中的对象，前缀: {prefix}", is_step=True)
+        start_time = datetime.now()
+
+        # 使用缓存提高性能
+        cache_key = f"list_objects_{bucket_name}_{prefix}_{delimiter}_{max_keys}"
+        if cache_key in self.cache:
+            self.log(f"使用缓存结果", is_success=True)
+            return self.cache[cache_key]
+
         contents = []
 
-        # Filter objects by prefix
+        # 按前缀过滤对象
         filtered_objects = {
             key: obj for key, obj in self.objects.items()
             if key.startswith(prefix)
         }
 
-        # Handle delimiter (for directory-like listing)
+        self.log(f"找到 {len(filtered_objects)} 个匹配前缀 '{prefix}' 的对象", indent=1)
+
+        # 处理分隔符（用于目录式列表）
         if delimiter:
-            # Group by common prefixes
+            self.log(f"使用分隔符: '{delimiter}'", indent=1)
+            # 按公共前缀分组
             common_prefixes = set()
             filtered_keys = []
 
@@ -121,7 +167,9 @@ class S3Adapter:
                         # This is a direct child
                         filtered_keys.append(key)
 
-            # Add common prefixes as directory objects
+            self.log(f"找到 {len(common_prefixes)} 个公共前缀和 {len(filtered_keys)} 个直接子项", indent=1)
+
+            # 添加公共前缀作为目录对象
             for common_prefix in common_prefixes:
                 s3_obj = S3Object(
                     Key=common_prefix,
@@ -142,7 +190,7 @@ class S3Adapter:
                     s3_obj = S3Object(**obj)
                 else:
                     # 需要转换为 S3 格式
-                    print(f"Converting object to S3 format: {key}")
+                    self.log(f"将对象转换为 S3 格式: {key}", indent=2)
                     s3_obj = S3Object(
                         Key=key,
                         LastModified=datetime.now(),
@@ -153,7 +201,8 @@ class S3Adapter:
                     )
                 contents.append(s3_obj)
         else:
-            # No delimiter, just list all objects with the prefix
+            # 没有分隔符，直接列出所有带前缀的对象
+            self.log(f"列出所有带前缀的对象", indent=1)
             for key, obj in filtered_objects.items():
                 # 检查对象是否有所需的 S3 字段
                 if isinstance(obj, dict) and "Key" in obj and "LastModified" in obj and "ETag" in obj and "Size" in obj:
@@ -161,7 +210,7 @@ class S3Adapter:
                     s3_obj = S3Object(**obj)
                 else:
                     # 需要转换为 S3 格式
-                    print(f"Converting object to S3 format: {key}")
+                    self.log(f"将对象转换为 S3 格式: {key}", indent=2)
                     s3_obj = S3Object(
                         Key=key,
                         LastModified=datetime.now(),
@@ -172,17 +221,19 @@ class S3Adapter:
                     )
                 contents.append(s3_obj)
 
-        # Sort by key
+        # 按键排序
         contents.sort(key=lambda x: x.Key)
+        self.log(f"排序后的对象数量: {len(contents)}", indent=1)
 
-        # Apply max_keys
+        # 应用 max_keys
         if max_keys > 0 and len(contents) > max_keys:
             contents = contents[:max_keys]
             is_truncated = True
+            self.log(f"应用 max_keys={max_keys}，结果被截断", indent=1)
         else:
             is_truncated = False
 
-        return S3ListObjectsResponse(
+        response = S3ListObjectsResponse(
             Name=bucket_name,
             Prefix=prefix,
             Marker="",
@@ -191,16 +242,37 @@ class S3Adapter:
             Contents=contents
         )
 
+        # 更新缓存
+        self.cache[cache_key] = response
+
+        end_time = datetime.now()
+        duration = (end_time - start_time).total_seconds()
+        self.log(f"S3 列表操作完成，耗时 {duration:.2f} 秒", is_success=True)
+
+        return response
+
     async def get_object(self, key: str) -> Optional[Dict[str, Any]]:
-        """Get an object from the S3 bucket"""
+        """从 S3 存储桶获取对象"""
+        self.log(f"\n获取对象: {key}", is_step=True)
+        start_time = datetime.now()
+
+        # 使用缓存提高性能
+        cache_key = f"get_object_{key}"
+        if cache_key in self.cache:
+            self.log(f"使用缓存结果", is_success=True)
+            return self.cache[cache_key]
+
         if key in self.objects:
+            self.log(f"在对象字典中找到对象", is_success=True)
+            self.cache[cache_key] = self.objects[key]
             return self.objects[key]
 
-        # Check if this is a file
+        # 检查这是否是文件
+        self.log(f"在文件列表中搜索对象", indent=1)
         for file_id, file in self.files.items():
             file_obj = NotionFile(**file)
 
-            # Find parent folder
+            # 找到父文件夹
             parent_id = file_obj.parent_id
             prefix = ""
 
@@ -211,8 +283,9 @@ class S3Adapter:
             file_key = generate_s3_key(file_id, prefix, file_obj.name)
 
             if file_key == key:
-                return {
-                    "Body": None,  # We don't store the actual file content
+                self.log(f"找到文件: {file_obj.name}", is_success=True)
+                result = {
+                    "Body": None,  # 我们不存储实际的文件内容
                     "ContentType": "application/octet-stream",
                     "ContentLength": file_obj.size or 0,
                     "ETag": f'"{generate_etag(file_id)}"',
@@ -222,16 +295,33 @@ class S3Adapter:
                         "notion_url": file_obj.url
                     }
                 }
+                self.cache[cache_key] = result
 
+                end_time = datetime.now()
+                duration = (end_time - start_time).total_seconds()
+                self.log(f"S3 获取对象操作完成，耗时 {duration:.2f} 秒", is_success=True)
+                return result
+
+        self.log(f"未找到对象: {key}", is_error=True)
         return None
 
     async def generate_presigned_url(self, key: str) -> Optional[str]:
-        """Generate a presigned URL for an object"""
-        # Find the file
+        """为对象生成预签名 URL"""
+        self.log(f"\n生成预签名 URL: {key}", is_step=True)
+        start_time = datetime.now()
+
+        # 使用缓存提高性能
+        cache_key = f"presigned_url_{key}"
+        if cache_key in self.cache:
+            self.log(f"使用缓存的 URL", is_success=True)
+            return self.cache[cache_key]
+
+        # 找到文件
+        self.log(f"在文件列表中搜索对象", indent=1)
         for file_id, file in self.files.items():
             file_obj = NotionFile(**file)
 
-            # Find parent folder
+            # 找到父文件夹
             parent_id = file_obj.parent_id
             prefix = ""
 
@@ -242,9 +332,15 @@ class S3Adapter:
             file_key = generate_s3_key(file_id, prefix, file_obj.name)
 
             if file_key == key:
-                # Return the Notion URL
+                self.log(f"找到文件: {file_obj.name}", is_success=True)
+                self.cache[cache_key] = file_obj.url
+
+                end_time = datetime.now()
+                duration = (end_time - start_time).total_seconds()
+                self.log(f"S3 生成预签名 URL 操作完成，耗时 {duration:.2f} 秒", is_success=True)
                 return file_obj.url
 
+        self.log(f"未找到对象: {key}", is_error=True)
         return None
 
     def get_expiration_time(self, key: str) -> Optional[datetime]:

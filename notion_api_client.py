@@ -191,10 +191,23 @@ class NotionAPI:
         self._add_to_cache(cache_key, children)
         return children
 
-    async def get_all_subpages_recursive(self, parent_id: str, visited: Optional[Set[str]] = None) -> Dict[str, NotionObject]:
+    async def get_all_subpages_recursive(self, parent_id: str, visited: Optional[Set[str]] = None, current_depth: int = 0, max_depth: int = 3) -> Dict[str, NotionObject]:
         """
         递归获取所有子页面，包括子页面的子页面、数据库子页面等
+
+        参数:
+            parent_id: 父页面 ID
+            visited: 已访问的页面 ID 集合
+            current_depth: 当前递归深度
+            max_depth: 最大递归深度，默认为 3
         """
+        # 检查缓存
+        cache_key = f"subpages_{parent_id}"
+        if cache_key in self.cache:
+            # 检查缓存是否过期
+            if datetime.now() < self.cache_expiration.get(cache_key, datetime.min):
+                return self.cache[cache_key]
+
         if visited is None:
             visited = set()
 
@@ -203,6 +216,10 @@ class NotionAPI:
 
         visited.add(parent_id)
         result = {}
+
+        # 检查是否超过最大深度
+        if current_depth > max_depth:
+            return result
 
         # 识别父类型
         async with self.semaphore:
@@ -226,28 +243,47 @@ class NotionAPI:
         )
         result[parent_id] = parent_obj
 
+        # 如果已经到达最大深度，不再获取子项
+        if current_depth == max_depth:
+            # 更新缓存
+            self.cache[cache_key] = result
+            self.cache_expiration[cache_key] = datetime.now() + timedelta(seconds=settings.CACHE_EXPIRATION)
+            return result
+
         # 获取子项
         async with self.semaphore:
             children = await self.get_children(parent_id, id_type)
 
-        # 并行处理子项
+        # 并行处理子项，但限制数量
         tasks = []
+        max_children = 10  # 限制子项数量以提高性能
+        count = 0
+
         for child in children:
             child_id = child.get("id")
             child_type = child.get("type")
 
             # 如果子项是页面或数据库，递归获取其子页面
             if child_type == "child_page" or child_type == "child_database":
-                tasks.append(self.get_all_subpages_recursive(child_id, visited))
+                tasks.append(self.get_all_subpages_recursive(child_id, visited, current_depth + 1, max_depth))
+                count += 1
             elif id_type == NotionIdType.DATABASE:
                 # 数据库查询结果是页面
-                tasks.append(self.get_all_subpages_recursive(child_id, visited))
+                tasks.append(self.get_all_subpages_recursive(child_id, visited, current_depth + 1, max_depth))
+                count += 1
+
+            if count >= max_children:
+                break
 
         # 并行执行任务
         if tasks:
             child_results = await asyncio.gather(*tasks)
             for child_result in child_results:
                 result.update(child_result)
+
+        # 更新缓存
+        self.cache[cache_key] = result
+        self.cache_expiration[cache_key] = datetime.now() + timedelta(seconds=settings.CACHE_EXPIRATION)
 
         return result
 
@@ -454,12 +490,21 @@ class NotionAPI:
 
     async def get_all_files(self, notion_id: str) -> List[NotionFile]:
         """从任何 Notion 对象获取所有文件"""
+        # 检查缓存
+        cache_key = f"files_{notion_id}"
+        if cache_key in self.cache:
+            # 检查缓存是否过期
+            if datetime.now() < self.cache_expiration.get(cache_key, datetime.min):
+                self.print_file_status(f"从缓存中获取文件: {notion_id}", is_success=True)
+                return self.cache[cache_key]
+
         async with self.semaphore:
             id_type, _ = await self.identify_id_type(notion_id)
 
-        print(f"开始从 {notion_id} ({id_type}) 获取文件")
+        self.print_file_status(f"开始从 {notion_id} ({id_type}) 获取文件", is_step=True)
 
         all_files = []
+        processed_ids = set()  # 跟踪已处理的 ID
 
         # 获取当前对象的文件
         if id_type == NotionIdType.PAGE:
@@ -472,19 +517,28 @@ class NotionAPI:
             files = await self.get_files_from_block(notion_id)
             all_files.extend(files)
         else:
-            print(f"未知的 Notion ID 类型: {id_type}")
+            self.print_file_status(f"未知的 Notion ID 类型: {id_type}", is_error=True)
             return []
+
+        processed_ids.add(notion_id)
 
         # 获取子页面的文件
         try:
-            # 获取所有子页面
-            notion_objects = await self.get_all_subpages_recursive(notion_id)
+            # 获取所有子页面，但限制深度以提高性能
+            notion_objects = await self.get_all_subpages_recursive(notion_id, max_depth=2)
 
-            # 并行获取每个子页面的文件
+            # 并行获取每个子页面的文件，但限制数量
             tasks = []
+            count = 0
+            max_pages = 10  # 限制子页面数量以提高性能
+
             for obj_id, obj in notion_objects.items():
-                if obj_id != notion_id:  # 跳过当前页面
+                if obj_id != notion_id and obj_id not in processed_ids:  # 跳过当前页面和已处理的页面
                     tasks.append(self._get_files_from_object(obj_id, obj.type))
+                    processed_ids.add(obj_id)
+                    count += 1
+                    if count >= max_pages:
+                        break
 
             # 并行执行任务
             if tasks:
@@ -492,7 +546,11 @@ class NotionAPI:
                 for result in results:
                     all_files.extend(result)
         except Exception as e:
-            print(f"获取子页面文件时出错: {e}")
+            self.print_file_status(f"获取子页面文件时出错: {e}", is_error=True)
+
+        # 更新缓存
+        self.cache[cache_key] = all_files
+        self.cache_expiration[cache_key] = datetime.now() + timedelta(seconds=settings.CACHE_EXPIRATION)
 
         return all_files
 
