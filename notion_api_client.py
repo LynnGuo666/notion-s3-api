@@ -334,6 +334,34 @@ class NotionAPI:
 
         print(f"{prefix}{message}")
 
+    def _estimate_file_size(self, filename: str, file_type: str) -> int:
+        """根据文件名和类型估算文件大小"""
+        # 获取文件扩展名
+        ext = os.path.splitext(filename)[1].lower()
+
+        # 根据文件类型和扩展名估算大小
+        if file_type == "pdf" or ext == ".pdf":
+            # PDF文件通常较大
+            return 2 * 1024 * 1024  # 2MB
+        elif file_type == "image" or ext in [".jpg", ".jpeg", ".png", ".gif", ".webp"]:
+            # 图片文件
+            return 500 * 1024  # 500KB
+        elif file_type == "video" or ext in [".mp4", ".mov", ".avi", ".mkv"]:
+            # 视频文件
+            return 10 * 1024 * 1024  # 10MB
+        elif file_type == "audio" or ext in [".mp3", ".wav", ".ogg", ".m4a"]:
+            # 音频文件
+            return 3 * 1024 * 1024  # 3MB
+        elif ext in [".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"]:
+            # Office文档
+            return 1 * 1024 * 1024  # 1MB
+        elif ext in [".zip", ".rar", ".7z", ".tar", ".gz"]:
+            # 压缩文件
+            return 5 * 1024 * 1024  # 5MB
+        else:
+            # 其他文件类型
+            return 1 * 1024 * 1024  # 1MB默认大小
+
     async def _extract_file_from_block(self, block: Dict[str, Any], block_id: str, block_type: str, parent_id: str) -> Optional[NotionFile]:
         """从块中提取文件"""
         self.print_file_status(f"\n找到文件块: {block_id}, 类型: {block_type}", is_step=True)
@@ -410,12 +438,15 @@ class NotionAPI:
             filename = decode_url_encoding(filename)
             self.print_file_status(f"最终文件名: {filename}", indent=1, is_success=True)
 
+            # 估算文件大小
+            estimated_size = self._estimate_file_size(filename, block_type)
+
             # 创建 NotionFile 对象
             file = NotionFile(
                 id=block_id,
                 name=filename,
                 type=block_type,
-                size=0,  # Notion API 不提供大小信息
+                size=estimated_size,  # 使用估算的文件大小
                 url=url,
                 parent_id=parent_id,
                 expiration_time=datetime.now() + timedelta(seconds=settings.PRESIGNED_URL_EXPIRATION)
