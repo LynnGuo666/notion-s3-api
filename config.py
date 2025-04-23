@@ -4,7 +4,7 @@ from pydantic.dataclasses import dataclass
 from dotenv import load_dotenv
 
 # 版本号
-VERSION = "1.2.3"
+VERSION = "1.2.4"
 
 # 加载 .env 文件
 load_dotenv()

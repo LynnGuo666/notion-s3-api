@@ -12,7 +12,7 @@ from fastapi.security.api_key import APIKeyHeader
 # from auth import s3_auth_required  # 暂时移除S3验证
 
 from config import settings
-from models import NotionIdType, NotionObject, NotionFile, NotionFolder, S3ListObjectsResponse, S3Error, S3Object
+from models import NotionIdType, NotionObject, NotionFile, NotionFolder, S3ListObjectsResponse, S3Error, S3Object, S3CommonPrefix
 from notion_api_client import NotionAPI
 from s3_adapter import S3Adapter
 from utils import detect_notion_id_type, decode_url_encoding, format_datetime_for_browser, generate_etag
@@ -289,28 +289,19 @@ async def list_bucket_objects(
             top_folder = obj.Key.split('/', 1)[0] + '/'
             common_prefixes.add(top_folder)
 
-            # 如果没有使用 delimiter，不显示文件夹中的文件
-            if not decoded_delimiter:
-                continue
+            # 即使没有使用 delimiter，也显示文件夹中的文件
+            # 因为我们会在CommonPrefixes中正确地表示文件夹
 
         filtered_contents.append(obj)
 
-    # 添加公共前缀作为文件夹
-    # 即使没有使用 delimiter，也添加顶级文件夹
-    for prefix in common_prefixes:
-        # 创建一个表示文件夹的对象
-        folder_obj = S3Object(
-            Key=prefix,
-            LastModified=datetime.now(),
-            ETag=f'"{generate_etag(prefix)}"',
-            Size=0,  # 文件夹大小为0
-            StorageClass="STANDARD",
-            Owner={"DisplayName": "notion-s3-api"}
-        )
-        filtered_contents.append(folder_obj)
-
     # 替换原始内容
     response.Contents = filtered_contents
+
+    # 添加公共前缀作为文件夹
+    common_prefix_objects = []
+    for prefix in common_prefixes:
+        common_prefix_objects.append(S3CommonPrefix(Prefix=prefix))
+    response.CommonPrefixes = common_prefix_objects
 
     # 转换为 XML
     root = ET.Element("ListBucketResult")
@@ -320,6 +311,7 @@ async def list_bucket_objects(
     ET.SubElement(root, "MaxKeys").text = str(response.MaxKeys)
     ET.SubElement(root, "IsTruncated").text = str(response.IsTruncated).lower()
 
+    # 添加内容
     for obj in response.Contents:
         content = ET.SubElement(root, "Contents")
         ET.SubElement(content, "Key").text = obj.Key
@@ -330,6 +322,11 @@ async def list_bucket_objects(
 
         owner = ET.SubElement(content, "Owner")
         ET.SubElement(owner, "DisplayName").text = obj.Owner["DisplayName"]
+
+    # 添加公共前缀（文件夹）
+    for prefix_obj in response.CommonPrefixes:
+        common_prefix = ET.SubElement(root, "CommonPrefixes")
+        ET.SubElement(common_prefix, "Prefix").text = prefix_obj.Prefix
 
     xml_str = ET.tostring(root, encoding="utf-8", method="xml")
     return Response(content=xml_str, media_type="application/xml")

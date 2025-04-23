@@ -239,7 +239,8 @@ class S3Adapter:
             Marker="",
             MaxKeys=max_keys,
             IsTruncated=is_truncated,
-            Contents=contents
+            Contents=contents,
+            CommonPrefixes=[]  # 在main.py中填充
         )
 
         # 更新缓存

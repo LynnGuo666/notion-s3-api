@@ -52,6 +52,11 @@ class S3Object(BaseModel):
     Owner: Dict[str, str] = {"DisplayName": "notion-s3-api"}  # 所有者信息
 
 
+class S3CommonPrefix(BaseModel):
+    """表示 S3 公共前缀的模型"""
+    Prefix: str  # 前缀
+
+
 class S3ListObjectsResponse(BaseModel):
     """表示 S3 列出对象响应的模型"""
     Name: str  # 存储桶名称
@@ -59,7 +64,8 @@ class S3ListObjectsResponse(BaseModel):
     Marker: str  # 标记
     MaxKeys: int  # 最大键数
     IsTruncated: bool  # 是否被截断
-    Contents: List[S3Object]  # 内容列表
+    Contents: List[S3Object] = []  # 内容列表
+    CommonPrefixes: List[S3CommonPrefix] = []  # 公共前缀列表
 
 
 class S3Error(BaseModel):
