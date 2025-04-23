@@ -4,19 +4,19 @@
 
 ## 功能特点
 
-- 连接 Notion API 获取内容
-- 提供 S3 兼容的 API 接口，支持 Alist 集成
-- 处理不同类型的 Notion ID（块 ID、页面 ID、数据库 ID）
+- 自动判断 Notion ID 类型（块 ID、页面 ID、数据库 ID）
 - 递归获取所有子页面及其内容
-- 按页面名称在文件夹中组织内容
+- 按页面名称组织文件夹结构
 - 处理 URL 编码（如 %4d）并转换为中文字符
-- 提供带有过期时间的直接文件链接
+- 提供两种模式：
+  1. API 格式返回下载链接
+  2. S3 兼容格式（用于 Alist 集成）
 
 ## 安装步骤
 
-1. 克隆仓库：
+1. 克隆仓库并进入目录：
 ```bash
-git clone https://github.com/yourusername/notion-s3-api.git
+git clone https://github.com/LynnGuo666/notion-s3-api.git
 cd notion-s3-api
 ```
 
@@ -44,36 +44,29 @@ python main.py
 
 2. API 将在 http://localhost:8000 可用
 
-3. 设置要使用的 Notion ID：
-```
-GET /api/notion/id?id=你的_notion_id
-```
-
-4. 刷新 Notion 数据：
-```
-GET /api/notion/refresh
-```
-
-5. 访问 S3 兼容 API：
-```
-GET /notion-s3-api
-```
-
 ## API 端点
 
-### Notion API
+### API 格式返回下载链接
 
-- `GET /api/notion/id?id={notion_id}` - 设置要使用的 Notion ID
-- `GET /api/notion/refresh` - 刷新 Notion 数据
-- `GET /api/files` - 列出所有文件
-- `GET /api/folders` - 列出所有文件夹
-- `GET /api/file/{file_id}` - 获取文件信息
-- `GET /api/folder/{folder_id}` - 获取文件夹信息
+```
+GET /api/{notion_id}
+```
+
+返回 JSON 格式的数据，包含所有文件的信息和下载链接。
 
 ### S3 兼容 API
 
-- `GET /{bucket}` - 列出存储桶中的对象
-- `GET /{bucket}/{key}` - 从存储桶获取对象
+```
+GET /{notion_id}
+```
+
+将 Notion ID 作为存储桶名称，返回 S3 兼容格式的数据。
+
+```
+GET /{notion_id}/{key}
+```
+
+获取指定的文件并重定向到下载链接。
 
 ## Alist 集成
 
@@ -82,7 +75,7 @@ GET /notion-s3-api
 1. 在 Alist 中，添加新存储
 2. 选择 "S3" 作为存储类型
 3. 配置以下设置：
-   - 存储桶名称: `notion-s3-api`
+   - 存储桶名称: `你的_notion_id`
    - 端点: `http://localhost:8000`
    - 区域: 留空
    - 访问密钥 ID: 任意值（未使用）
