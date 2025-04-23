@@ -263,36 +263,53 @@ async def list_bucket_objects(
     filtered_contents = []
     common_prefixes = set()
 
+    # 过滤掉ID形式的文件
+    id_pattern = r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+
     for obj in response.Contents:
         # 过滤掉与 bucket 名称相同的 key
         if obj.Key == bucket:
             continue
 
+        # 过滤掉ID形式的文件
+        import re
+        if re.match(id_pattern, obj.Key):
+            continue
+
         # 处理文件夹
         if obj.Key.endswith('/'):
             # 如果是文件夹，添加到公共前缀集合
-            folder_name = obj.Key.rstrip('/')
+            folder_path = obj.Key
 
-            # 提取顶级文件夹
-            if '/' in folder_name:
-                # 如果是子文件夹，提取顶级文件夹
-                top_folder = folder_name.split('/', 1)[0] + '/'
-                common_prefixes.add(top_folder)
+            # 如果有前缀，则使用前缀过滤
+            if decoded_prefix:
+                # 如果当前文件夹是前缀的直接子文件夹
+                if folder_path.startswith(decoded_prefix) and folder_path.count('/') == decoded_prefix.count('/') + 1:
+                    common_prefixes.add(folder_path)
             else:
-                # 如果是顶级文件夹，直接添加
-                common_prefixes.add(obj.Key)
+                # 如果没有前缀，则只显示顶级文件夹
+                if folder_path.count('/') == 1:
+                    common_prefixes.add(folder_path)
             continue
 
         # 处理文件
         if '/' in obj.Key:
-            # 如果文件在文件夹中，添加顶级文件夹前缀
-            top_folder = obj.Key.split('/', 1)[0] + '/'
-            common_prefixes.add(top_folder)
+            # 如果文件在文件夹中
+            folder_path = obj.Key.rsplit('/', 1)[0] + '/'
 
-            # 即使没有使用 delimiter，也显示文件夹中的文件
-            # 因为我们会在CommonPrefixes中正确地表示文件夹
-
-        filtered_contents.append(obj)
+            # 如果有前缀，则使用前缀过滤
+            if decoded_prefix:
+                # 如果当前文件在前缀指定的文件夹中
+                if folder_path == decoded_prefix:
+                    filtered_contents.append(obj)
+            else:
+                # 如果没有前缀，则只显示顶级文件夹中的文件
+                top_folder = obj.Key.split('/', 1)[0] + '/'
+                common_prefixes.add(top_folder)
+        else:
+            # 如果文件在根目录中
+            if not decoded_prefix:
+                filtered_contents.append(obj)
 
     # 替换原始内容
     response.Contents = filtered_contents
@@ -305,11 +322,14 @@ async def list_bucket_objects(
 
     # 打印文件夹结构
     print("\n=== 文件夹结构 ===\n")
+    print(f"\u5f53前前缀: {decoded_prefix or '无'}")
+    print(f"\u5206隔符: {decoded_delimiter or '无'}")
+    print("\n文件夹:")
     for prefix_obj in response.CommonPrefixes:
-        print(f"\u6587件夹: {prefix_obj.Prefix}")
-    print("\n=== 文件列表 ===\n")
+        print(f"  - {prefix_obj.Prefix}")
+    print("\n文件:")
     for obj in response.Contents:
-        print(f"\u6587件: {obj.Key} (大小: {obj.Size} 字节)")
+        print(f"  - {obj.Key} (大小: {obj.Size} 字节)")
     print("\n===================\n")
 
     # 转换为 XML
@@ -360,7 +380,7 @@ async def get_object(
         )
 
         root = ET.Element("Error")
-        for k, value in error.dict().items():
+        for k, value in error.model_dump().items():
             child = ET.SubElement(root, k)
             child.text = str(value)
 
@@ -385,7 +405,7 @@ async def get_object(
         )
 
         root = ET.Element("Error")
-        for k, value in error.dict().items():
+        for k, value in error.model_dump().items():
             child = ET.SubElement(root, k)
             child.text = str(value)
 

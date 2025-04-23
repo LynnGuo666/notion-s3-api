@@ -62,11 +62,18 @@ class S3Adapter:
         """Convert a NotionFolder to an S3Object (as a directory)"""
         # 使用文件夹名称而不是ID作为键
         if folder.name.strip() and not folder.name.startswith(folder.id[:8]):
-            key = generate_s3_key("", prefix, folder.name + "/")
+            # 如果有前缀，则添加到前缀中
+            if prefix:
+                key = f"{prefix}{folder.name}/"
+            else:
+                key = f"{folder.name}/"
             self.log(f"创建文件夹: {key}", indent=1)
         else:
             # 如果文件夹名称为空或者是ID形式，使用默认名称
-            key = generate_s3_key("", prefix, "Notion_Files/")
+            if prefix:
+                key = f"{prefix}Notion_Files/"
+            else:
+                key = "Notion_Files/"
             self.log(f"创建默认文件夹: {key}", indent=1)
 
         return S3Object(
@@ -96,20 +103,23 @@ class S3Adapter:
 
         # 添加对象
         self.log(f"添加 {len(notion_objects)} 个 Notion 对象", is_step=True)
-        for obj_id, obj in notion_objects.items():
-            self.objects[obj_id] = obj.dict()
+        # 不再将对象ID直接添加到objects字典中
+        # for obj_id, obj in notion_objects.items():
+        #     self.objects[obj_id] = obj.dict()
 
         # 添加文件夹
         self.log(f"添加 {len(notion_folders)} 个文件夹", is_step=True)
         for folder_id, folder in notion_folders.items():
-            self.folders[folder_id] = folder.dict()
+            # 使用model_dump而不是dict
+            self.folders[folder_id] = folder.model_dump()
 
             # 为文件夹创建 S3 对象
             s3_obj = self._get_s3_object_from_notion_folder(folder)
             key = s3_obj.Key
 
             if key not in self.objects:
-                self.objects[key] = s3_obj.dict()
+                # 使用model_dump而不是dict
+                self.objects[key] = s3_obj.model_dump()
 
         # 添加文件
         self.log(f"添加 {len(notion_files)} 个文件", is_step=True)
@@ -118,7 +128,8 @@ class S3Adapter:
                 self.log(f"已处理 {i}/{len(notion_files)} 个文件", indent=1)
 
             file_id = file.id
-            self.files[file_id] = file.dict()
+            # 使用model_dump而不是dict
+            self.files[file_id] = file.model_dump()
 
             # 找到父文件夹
             parent_id = file.parent_id
@@ -140,7 +151,8 @@ class S3Adapter:
             key = s3_obj.Key
 
             if key not in self.objects:
-                self.objects[key] = s3_obj.dict()
+                # 使用model_dump而不是dict
+                self.objects[key] = s3_obj.model_dump()
 
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()
