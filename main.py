@@ -259,6 +259,22 @@ async def list_bucket_objects(
     # 列出对象
     response = await s3_adapter.list_objects(bucket, decoded_prefix, decoded_delimiter, max_keys)
 
+    # 过滤内容，移除不需要的条目
+    filtered_contents = []
+    for obj in response.Contents:
+        # 过滤掉与 bucket 名称相同的 key
+        if obj.Key == bucket:
+            continue
+
+        # 如果没有使用 delimiter，过滤掉以斜杠结尾的文件夹条目
+        if not decoded_delimiter and obj.Key.endswith('/'):
+            continue
+
+        filtered_contents.append(obj)
+
+    # 替换原始内容
+    response.Contents = filtered_contents
+
     # 转换为 XML
     root = ET.Element("ListBucketResult")
     ET.SubElement(root, "Name").text = response.Name
