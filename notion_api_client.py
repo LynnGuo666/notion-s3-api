@@ -1,10 +1,11 @@
 import os
 import json
+import asyncio
 from typing import Dict, List, Optional, Any, Tuple, Set
 import urllib.parse
 from datetime import datetime, timedelta
 
-from notion_client import Client
+from notion_client import Client, AsyncClient
 from notion_client.errors import APIResponseError
 
 from config import settings
@@ -21,8 +22,12 @@ class NotionAPI:
 
         print(f"使用 Notion API 密钥: {self.api_key[:5]}...{self.api_key[-5:]}")
         self.client = Client(auth=self.api_key)
+        self.async_client = AsyncClient(auth=self.api_key)
         self.cache = {}
         self.cache_expiration = {}
+
+        # 并发请求限制
+        self.semaphore = asyncio.Semaphore(settings.MAX_CONCURRENT_REQUESTS)
 
     def _get_from_cache(self, key: str) -> Optional[Any]:
         """Get data from cache if it exists and is not expired"""
@@ -188,8 +193,7 @@ class NotionAPI:
 
     async def get_all_subpages_recursive(self, parent_id: str, visited: Optional[Set[str]] = None) -> Dict[str, NotionObject]:
         """
-        Recursively get all subpages, including subpages of subpages,
-        database subpages, etc.
+        递归获取所有子页面，包括子页面的子页面、数据库子页面等
         """
         if visited is None:
             visited = set()
@@ -200,16 +204,18 @@ class NotionAPI:
         visited.add(parent_id)
         result = {}
 
-        # Identify the parent type
-        id_type, obj_data = await self.identify_id_type(parent_id)
+        # 识别父类型
+        async with self.semaphore:
+            id_type, obj_data = await self.identify_id_type(parent_id)
 
         if id_type == NotionIdType.UNKNOWN:
             return result
 
-        # Get the parent title
-        title = await self.get_object_title(parent_id)
+        # 获取父标题
+        async with self.semaphore:
+            title = await self.get_object_title(parent_id)
 
-        # Add the parent to the result
+        # 将父项添加到结果中
         parent_obj = NotionObject(
             id=parent_id,
             type=id_type,
@@ -220,260 +226,221 @@ class NotionAPI:
         )
         result[parent_id] = parent_obj
 
-        # Get children
-        children = await self.get_children(parent_id, id_type)
+        # 获取子项
+        async with self.semaphore:
+            children = await self.get_children(parent_id, id_type)
 
+        # 并行处理子项
+        tasks = []
         for child in children:
             child_id = child.get("id")
             child_type = child.get("type")
 
-            # If child is a page or database, recursively get its subpages
+            # 如果子项是页面或数据库，递归获取其子页面
             if child_type == "child_page" or child_type == "child_database":
-                child_pages = await self.get_all_subpages_recursive(child_id, visited)
-                result.update(child_pages)
+                tasks.append(self.get_all_subpages_recursive(child_id, visited))
             elif id_type == NotionIdType.DATABASE:
-                # Database query results are pages
-                child_pages = await self.get_all_subpages_recursive(child_id, visited)
-                result.update(child_pages)
+                # 数据库查询结果是页面
+                tasks.append(self.get_all_subpages_recursive(child_id, visited))
+
+        # 并行执行任务
+        if tasks:
+            child_results = await asyncio.gather(*tasks)
+            for child_result in child_results:
+                result.update(child_result)
 
         return result
 
     async def get_files_from_page(self, page_id: str) -> List[NotionFile]:
-        """Get all files from a page"""
+        """从页面获取所有文件"""
         files = []
 
-        # Get all blocks in the page
-        blocks = await self.get_children(page_id, NotionIdType.PAGE)
+        # 获取页面中的所有块
+        async with self.semaphore:
+            blocks = await self.get_children(page_id, NotionIdType.PAGE)
 
+        # 并行处理块
+        tasks = []
         for block in blocks:
             block_id = block.get("id")
             block_type = block.get("type")
 
-            # Check if this is a file block
+            # 检查这是否是文件块
             if is_file_block(block):
-                print(f"\n找到文件块: {block_id}, 类型: {block_type}")
+                tasks.append(self._extract_file_from_block(block, block_id, block_type, page_id))
 
-                # 尝试不同的方式提取 URL
-                url = ""
-                filename = f"file_{block_id}.{block_type}"
-
-                # 方式 1: 直接从块内容中提取 URL
-                if block_type in block:
-                    block_content = block[block_type]
-
-                    # 检查是否有直接的 URL
-                    if isinstance(block_content, dict) and "url" in block_content:
-                        url = block_content["url"]
-                        print(f"  从块内容直接提取 URL: {url}")
-
-                    # 检查是否有类型字段
-                    elif isinstance(block_content, dict) and "type" in block_content:
-                        content_type = block_content["type"]
-                        if content_type in block_content and "url" in block_content[content_type]:
-                            url = block_content[content_type]["url"]
-                            print(f"  从内容类型提取 URL: {url}")
-
-                    # 检查是否有文件字段
-                    elif isinstance(block_content, dict) and "file" in block_content:
-                        if "url" in block_content["file"]:
-                            url = block_content["file"]["url"]
-                            print(f"  从文件字段提取 URL: {url}")
-
-                    # 检查是否有外部字段
-                    elif isinstance(block_content, dict) and "external" in block_content:
-                        if "url" in block_content["external"]:
-                            url = block_content["external"]["url"]
-                            print(f"  从外部字段提取 URL: {url}")
-
-                    # 检查是否有标题或名称
-                    if isinstance(block_content, dict):
-                        if "title" in block_content:
-                            title_parts = block_content["title"]
-                            if isinstance(title_parts, list):
-                                title = "".join([part.get("plain_text", "") for part in title_parts])
-                                if title:
-                                    filename = title
-                                    print(f"  从标题提取文件名: {filename}")
-                        elif "caption" in block_content:
-                            caption_parts = block_content["caption"]
-                            if isinstance(caption_parts, list):
-                                caption = "".join([part.get("plain_text", "") for part in caption_parts])
-                                if caption:
-                                    filename = caption
-                                    print(f"  从标题提取文件名: {filename}")
-
-                # 方式 2: 传统方式提取
-                if not url:
-                    file_data = block.get(block_type, {})
-                    file_type = file_data.get("type", "external")
-                    file_info = file_data.get(file_type, {})
-                    url = file_info.get("url", "")
-                    print(f"  传统方式提取 URL: {url}")
-
-                if url:
-                    # 从 URL 提取文件名
-                    parsed_url = urllib.parse.urlparse(url)
-                    path = parsed_url.path
-                    url_filename = os.path.basename(path)
-
-                    # 如果没有从块内容提取到文件名，则使用 URL 中的文件名
-                    if filename.startswith("file_"):
-                        filename = url_filename
-
-                    # 解码 URL 编码字符
-                    filename = decode_url_encoding(filename)
-                    print(f"  最终文件名: {filename}")
-
-                    # 创建 NotionFile 对象
-                    file = NotionFile(
-                        id=block_id,
-                        name=filename,
-                        type=block_type,
-                        size=0,  # Notion API 不提供大小信息
-                        url=url,
-                        parent_id=page_id,
-                        expiration_time=datetime.now() + timedelta(seconds=settings.PRESIGNED_URL_EXPIRATION)
-                    )
-                    files.append(file)
-                    print(f"  添加文件: {filename}")
-
-            # Recursively check child blocks
+            # 递归检查子块
             if block.get("has_children", False):
-                child_files = await self.get_files_from_block(block_id)
-                files.extend(child_files)
+                tasks.append(self.get_files_from_block(block_id))
+
+        # 并行执行任务
+        if tasks:
+            results = await asyncio.gather(*tasks)
+            for result in results:
+                if isinstance(result, list):
+                    files.extend(result)
+                elif result:  # 单个文件
+                    files.append(result)
 
         return files
 
+    async def _extract_file_from_block(self, block: Dict[str, Any], block_id: str, block_type: str, parent_id: str) -> Optional[NotionFile]:
+        """从块中提取文件"""
+        print(f"\n找到文件块: {block_id}, 类型: {block_type}")
+
+        # 尝试不同的方式提取 URL
+        url = ""
+        filename = f"file_{block_id}.{block_type}"
+
+        # 方式 1: 直接从块内容中提取 URL
+        if block_type in block:
+            block_content = block[block_type]
+
+            # 检查是否有直接的 URL
+            if isinstance(block_content, dict) and "url" in block_content:
+                url = block_content["url"]
+                print(f"  从块内容直接提取 URL: {url}")
+
+            # 检查是否有类型字段
+            elif isinstance(block_content, dict) and "type" in block_content:
+                content_type = block_content["type"]
+                if content_type in block_content and "url" in block_content[content_type]:
+                    url = block_content[content_type]["url"]
+                    print(f"  从内容类型提取 URL: {url}")
+
+            # 检查是否有文件字段
+            elif isinstance(block_content, dict) and "file" in block_content:
+                if "url" in block_content["file"]:
+                    url = block_content["file"]["url"]
+                    print(f"  从文件字段提取 URL: {url}")
+
+            # 检查是否有外部字段
+            elif isinstance(block_content, dict) and "external" in block_content:
+                if "url" in block_content["external"]:
+                    url = block_content["external"]["url"]
+                    print(f"  从外部字段提取 URL: {url}")
+
+            # 检查是否有标题或名称
+            if isinstance(block_content, dict):
+                if "title" in block_content:
+                    title_parts = block_content["title"]
+                    if isinstance(title_parts, list):
+                        title = "".join([part.get("plain_text", "") for part in title_parts])
+                        if title:
+                            filename = title
+                            print(f"  从标题提取文件名: {filename}")
+                elif "caption" in block_content:
+                    caption_parts = block_content["caption"]
+                    if isinstance(caption_parts, list):
+                        caption = "".join([part.get("plain_text", "") for part in caption_parts])
+                        if caption:
+                            filename = caption
+                            print(f"  从标题提取文件名: {filename}")
+
+        # 方式 2: 传统方式提取
+        if not url:
+            file_data = block.get(block_type, {})
+            file_type = file_data.get("type", "external")
+            file_info = file_data.get(file_type, {})
+            url = file_info.get("url", "")
+            print(f"  传统方式提取 URL: {url}")
+
+        if url:
+            # 从 URL 提取文件名
+            parsed_url = urllib.parse.urlparse(url)
+            path = parsed_url.path
+            url_filename = os.path.basename(path)
+
+            # 如果没有从块内容提取到文件名，则使用 URL 中的文件名
+            if filename.startswith("file_"):
+                filename = url_filename
+
+            # 解码 URL 编码字符
+            filename = decode_url_encoding(filename)
+            print(f"  最终文件名: {filename}")
+
+            # 创建 NotionFile 对象
+            file = NotionFile(
+                id=block_id,
+                name=filename,
+                type=block_type,
+                size=0,  # Notion API 不提供大小信息
+                url=url,
+                parent_id=parent_id,
+                expiration_time=datetime.now() + timedelta(seconds=settings.PRESIGNED_URL_EXPIRATION)
+            )
+            print(f"  添加文件: {filename}")
+            return file
+
+        return None
+
     async def get_files_from_block(self, block_id: str) -> List[NotionFile]:
-        """Get all files from a block"""
+        """从块获取所有文件"""
         files = []
 
-        # Get the block
+        # 获取块
         try:
-            block = self.client.blocks.retrieve(block_id)
+            async with self.semaphore:
+                block = await self.async_client.blocks.retrieve(block_id)
 
-            # Check if this is a file block
+            # 检查这是否是文件块
             block_type = block.get("type")
             if is_file_block(block):
-                print(f"\n找到文件块: {block_id}, 类型: {block_type}")
-
-                # 尝试不同的方式提取 URL
-                url = ""
-                filename = f"file_{block_id}.{block_type}"
-
-                # 方式 1: 直接从块内容中提取 URL
-                if block_type in block:
-                    block_content = block[block_type]
-
-                    # 检查是否有直接的 URL
-                    if isinstance(block_content, dict) and "url" in block_content:
-                        url = block_content["url"]
-                        print(f"  从块内容直接提取 URL: {url}")
-
-                    # 检查是否有类型字段
-                    elif isinstance(block_content, dict) and "type" in block_content:
-                        content_type = block_content["type"]
-                        if content_type in block_content and "url" in block_content[content_type]:
-                            url = block_content[content_type]["url"]
-                            print(f"  从内容类型提取 URL: {url}")
-
-                    # 检查是否有文件字段
-                    elif isinstance(block_content, dict) and "file" in block_content:
-                        if "url" in block_content["file"]:
-                            url = block_content["file"]["url"]
-                            print(f"  从文件字段提取 URL: {url}")
-
-                    # 检查是否有外部字段
-                    elif isinstance(block_content, dict) and "external" in block_content:
-                        if "url" in block_content["external"]:
-                            url = block_content["external"]["url"]
-                            print(f"  从外部字段提取 URL: {url}")
-
-                    # 检查是否有标题或名称
-                    if isinstance(block_content, dict):
-                        if "title" in block_content:
-                            title_parts = block_content["title"]
-                            if isinstance(title_parts, list):
-                                title = "".join([part.get("plain_text", "") for part in title_parts])
-                                if title:
-                                    filename = title
-                                    print(f"  从标题提取文件名: {filename}")
-                        elif "caption" in block_content:
-                            caption_parts = block_content["caption"]
-                            if isinstance(caption_parts, list):
-                                caption = "".join([part.get("plain_text", "") for part in caption_parts])
-                                if caption:
-                                    filename = caption
-                                    print(f"  从标题提取文件名: {filename}")
-
-                # 方式 2: 传统方式提取
-                if not url:
-                    file_data = block.get(block_type, {})
-                    file_type = file_data.get("type", "external")
-                    file_info = file_data.get(file_type, {})
-                    url = file_info.get("url", "")
-                    print(f"  传统方式提取 URL: {url}")
-
-                if url:
-                    # 从 URL 提取文件名
-                    parsed_url = urllib.parse.urlparse(url)
-                    path = parsed_url.path
-                    url_filename = os.path.basename(path)
-
-                    # 如果没有从块内容提取到文件名，则使用 URL 中的文件名
-                    if filename.startswith("file_"):
-                        filename = url_filename
-
-                    # 解码 URL 编码字符
-                    filename = decode_url_encoding(filename)
-                    print(f"  最终文件名: {filename}")
-
-                    # 创建 NotionFile 对象
-                    file = NotionFile(
-                        id=block_id,
-                        name=filename,
-                        type=block_type,
-                        size=0,  # Notion API 不提供大小信息
-                        url=url,
-                        parent_id=block_id,
-                        expiration_time=datetime.now() + timedelta(seconds=settings.PRESIGNED_URL_EXPIRATION)
-                    )
+                file = await self._extract_file_from_block(block, block_id, block_type, block_id)
+                if file:
                     files.append(file)
-                    print(f"  添加文件: {filename}")
 
-            # Get child blocks
+            # 获取子块
             if block.get("has_children", False):
-                children = await self.get_children(block_id, NotionIdType.BLOCK)
+                async with self.semaphore:
+                    children = await self.get_children(block_id, NotionIdType.BLOCK)
 
+                # 并行处理子块
+                tasks = []
                 for child in children:
                     child_id = child.get("id")
-                    child_files = await self.get_files_from_block(child_id)
-                    files.extend(child_files)
+                    tasks.append(self.get_files_from_block(child_id))
+
+                # 并行执行任务
+                if tasks:
+                    results = await asyncio.gather(*tasks)
+                    for result in results:
+                        files.extend(result)
 
         except Exception as e:
-            # Handle errors
-            pass
+            # 处理错误
+            print(f"Error getting files from block {block_id}: {e}")
 
         return files
 
     async def get_files_from_database(self, database_id: str) -> List[NotionFile]:
-        """Get all files from a database"""
+        """从数据库获取所有文件"""
         files = []
 
-        # Query the database to get all pages
-        pages = await self.get_children(database_id, NotionIdType.DATABASE)
+        # 查询数据库以获取所有页面
+        async with self.semaphore:
+            pages = await self.get_children(database_id, NotionIdType.DATABASE)
 
-        # Get files from each page
+        # 并行获取每个页面的文件
+        tasks = []
         for page in pages:
             page_id = page.get("id")
-            page_files = await self.get_files_from_page(page_id)
-            files.extend(page_files)
+            tasks.append(self.get_files_from_page(page_id))
+
+        # 并行执行任务
+        if tasks:
+            results = await asyncio.gather(*tasks)
+            for result in results:
+                files.extend(result)
 
         return files
 
     async def get_all_files(self, notion_id: str) -> List[NotionFile]:
-        """Get all files from any Notion object"""
-        id_type, _ = await self.identify_id_type(notion_id)
+        """从任何 Notion 对象获取所有文件"""
+        async with self.semaphore:
+            id_type, _ = await self.identify_id_type(notion_id)
+
+        print(f"开始从 {notion_id} ({id_type}) 获取文件")
 
         if id_type == NotionIdType.PAGE:
             return await self.get_files_from_page(notion_id)
@@ -482,6 +449,7 @@ class NotionAPI:
         elif id_type == NotionIdType.BLOCK:
             return await self.get_files_from_block(notion_id)
         else:
+            print(f"未知的 Notion ID 类型: {id_type}")
             return []
 
     async def create_folder_structure(self, notion_id: str) -> Dict[str, NotionFolder]:

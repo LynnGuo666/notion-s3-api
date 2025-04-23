@@ -3,3 +3,4 @@ test_api.py
 test_main.http
 test_page.md
 /.idea/
+__pycache__/

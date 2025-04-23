@@ -5,9 +5,11 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 import urllib.parse
 
-from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response, Header, Depends
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security.api_key import APIKeyHeader
+from auth import s3_auth_required
 
 from config import settings
 from models import NotionIdType, NotionObject, NotionFile, NotionFolder, S3ListObjectsResponse, S3Error
@@ -15,7 +17,11 @@ from notion_api_client import NotionAPI
 from s3_adapter import S3Adapter
 from utils import detect_notion_id_type, decode_url_encoding, format_datetime_for_browser
 
-app = FastAPI(title="Notion S3 API", description="用于 Notion 内容的 S3 兼容 API")
+app = FastAPI(
+    title="Notion S3 API",
+    description="用于 Notion 内容的 S3 兼容 API",
+    version=settings.VERSION
+)
 
 # 添加 CORS 中间件
 app.add_middleware(
@@ -31,6 +37,18 @@ notion_api = NotionAPI()
 
 # 初始化 S3 适配器
 s3_adapter = S3Adapter()
+
+# API 密钥验证
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+async def verify_api_key(api_key: str = Depends(api_key_header)):
+    """验证 API 密钥"""
+    if not settings.API_KEY or api_key == settings.API_KEY:
+        return api_key
+    raise HTTPException(
+        status_code=403,
+        detail="无效的 API 密钥"
+    )
 
 
 async def get_notion_id_from_request(request: Request) -> str:
@@ -112,7 +130,7 @@ async def process_notion_data(notion_id: str):
 
 # API 端点
 
-@app.get("/api/{notion_id}")
+@app.get("/api/{notion_id}", dependencies=[Depends(verify_api_key)])
 async def get_notion_content(notion_id: str):
     """获取 Notion 内容并返回 API 格式的下载链接"""
     # 处理 Notion 数据
@@ -156,7 +174,7 @@ async def get_notion_content(notion_id: str):
 
 # S3 兼容 API 端点
 
-@app.get("/{bucket}")
+@app.get("/{bucket}", dependencies=[Depends(s3_auth_required)])
 async def list_bucket_objects(
     bucket: str,
     prefix: Optional[str] = Query("", alias="prefix"),
@@ -210,7 +228,7 @@ async def list_bucket_objects(
     return Response(content=xml_str, media_type="application/xml")
 
 
-@app.get("/{bucket}/{key:path}")
+@app.get("/{bucket}/{key:path}", dependencies=[Depends(s3_auth_required)])
 async def get_object(
     bucket: str,
     key: str

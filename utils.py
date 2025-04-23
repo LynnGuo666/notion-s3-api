@@ -110,12 +110,22 @@ def is_file_block(block: Dict[str, Any]) -> bool:
         "image",
         # 多媒体类型
         "video", "audio",
-        # 嵌入类型
-        "embed", "bookmark", "link_preview",
-        # 代码和数据类型
-        "code", "equation",
-        # 其他可能包含文件的块
-        "callout", "synced_block", "template", "column_list", "column"
+        # 其他媒体类型
+        "media", "file_attachment", "document", "spreadsheet", "presentation"
+
+        # 以下类型已注释，不再支持提取
+        # # 嵌入类型
+        # "embed", "bookmark", "link_preview", "link_to_page",
+        # # 代码和数据类型
+        # "code", "equation",
+        # # 其他可能包含文件的块
+        # "callout", "synced_block", "template", "column_list", "column",
+        # # 数据库相关
+        # "child_database", "child_page", "table", "table_row",
+        # # 外部服务集成
+        # "external", "drive", "figma", "framer", "gist", "maps", "miro", "typeform", "codepen",
+        # # 其他可能的块类型
+        # "divider", "table_of_contents", "breadcrumb", "bulleted_list_item", "numbered_list_item"
     ]
 
     block_type = block.get("type")
