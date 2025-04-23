@@ -41,7 +41,13 @@ class S3Adapter:
 
     def _get_s3_object_from_notion_file(self, file: NotionFile, prefix: str = "") -> S3Object:
         """Convert a NotionFile to an S3Object"""
-        key = generate_s3_key(file.id, prefix, file.name)
+        # 使用文件名而不是ID
+        if prefix:
+            key = f"{prefix}{file.name}"
+        else:
+            key = file.name
+
+        self.log(f"创建文件: {key}", indent=1)
 
         return S3Object(
             Key=key,
@@ -54,7 +60,14 @@ class S3Adapter:
 
     def _get_s3_object_from_notion_folder(self, folder: NotionFolder, prefix: str = "") -> S3Object:
         """Convert a NotionFolder to an S3Object (as a directory)"""
-        key = generate_s3_key(folder.id, prefix, folder.name + "/")
+        # 使用文件夹名称而不是ID作为键
+        if folder.name.strip() and not folder.name.startswith(folder.id[:8]):
+            key = generate_s3_key("", prefix, folder.name + "/")
+            self.log(f"创建文件夹: {key}", indent=1)
+        else:
+            # 如果文件夹名称为空或者是ID形式，使用默认名称
+            key = generate_s3_key("", prefix, "Notion_Files/")
+            self.log(f"创建默认文件夹: {key}", indent=1)
 
         return S3Object(
             Key=key,
@@ -113,7 +126,14 @@ class S3Adapter:
 
             if parent_id in self.folders:
                 folder = NotionFolder(**self.folders[parent_id])
-                prefix = generate_s3_key(folder.id, "", folder.name + "/")
+                # 使用文件夹名称而不是ID
+                if folder.name.strip() and not folder.name.startswith(folder.id[:8]):
+                    prefix = folder.name + "/"
+                    self.log(f"文件使用文件夹前缀: {prefix}", indent=2)
+                else:
+                    # 如果文件夹名称为空或者是ID形式，使用默认名称
+                    prefix = "Notion_Files/"
+                    self.log(f"文件使用默认文件夹前缀: {prefix}", indent=2)
 
             # 为文件创建 S3 对象
             s3_obj = self._get_s3_object_from_notion_file(file, prefix)
@@ -279,9 +299,18 @@ class S3Adapter:
 
             if parent_id in self.folders:
                 folder = NotionFolder(**self.folders[parent_id])
-                prefix = generate_s3_key(folder.id, "", folder.name + "/")
+                # 使用文件夹名称而不是ID
+                if folder.name.strip() and not folder.name.startswith(folder.id[:8]):
+                    prefix = folder.name + "/"
+                else:
+                    # 如果文件夹名称为空或者是ID形式，使用默认名称
+                    prefix = "Notion_Files/"
 
-            file_key = generate_s3_key(file_id, prefix, file_obj.name)
+            # 使用文件名而不是ID
+            if prefix:
+                file_key = f"{prefix}{file_obj.name}"
+            else:
+                file_key = file_obj.name
 
             if file_key == key:
                 self.log(f"找到文件: {file_obj.name}", is_success=True)
@@ -328,9 +357,18 @@ class S3Adapter:
 
             if parent_id in self.folders:
                 folder = NotionFolder(**self.folders[parent_id])
-                prefix = generate_s3_key(folder.id, "", folder.name + "/")
+                # 使用文件夹名称而不是ID
+                if folder.name.strip() and not folder.name.startswith(folder.id[:8]):
+                    prefix = folder.name + "/"
+                else:
+                    # 如果文件夹名称为空或者是ID形式，使用默认名称
+                    prefix = "Notion_Files/"
 
-            file_key = generate_s3_key(file_id, prefix, file_obj.name)
+            # 使用文件名而不是ID
+            if prefix:
+                file_key = f"{prefix}{file_obj.name}"
+            else:
+                file_key = file_obj.name
 
             if file_key == key:
                 self.log(f"找到文件: {file_obj.name}", is_success=True)
@@ -356,9 +394,18 @@ class S3Adapter:
 
             if parent_id in self.folders:
                 folder = NotionFolder(**self.folders[parent_id])
-                prefix = generate_s3_key(folder.id, "", folder.name + "/")
+                # 使用文件夹名称而不是ID
+                if folder.name.strip() and not folder.name.startswith(folder.id[:8]):
+                    prefix = folder.name + "/"
+                else:
+                    # 如果文件夹名称为空或者是ID形式，使用默认名称
+                    prefix = "Notion_Files/"
 
-            file_key = generate_s3_key(file_id, prefix, file_obj.name)
+            # 使用文件名而不是ID
+            if prefix:
+                file_key = f"{prefix}{file_obj.name}"
+            else:
+                file_key = file_obj.name
 
             if file_key == key:
                 # Return the expiration time

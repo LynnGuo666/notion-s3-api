@@ -303,6 +303,15 @@ async def list_bucket_objects(
         common_prefix_objects.append(S3CommonPrefix(Prefix=prefix))
     response.CommonPrefixes = common_prefix_objects
 
+    # 打印文件夹结构
+    print("\n=== 文件夹结构 ===\n")
+    for prefix_obj in response.CommonPrefixes:
+        print(f"\u6587件夹: {prefix_obj.Prefix}")
+    print("\n=== 文件列表 ===\n")
+    for obj in response.Contents:
+        print(f"\u6587件: {obj.Key} (大小: {obj.Size} 字节)")
+    print("\n===================\n")
+
     # 转换为 XML
     root = ET.Element("ListBucketResult")
     ET.SubElement(root, "Name").text = response.Name
