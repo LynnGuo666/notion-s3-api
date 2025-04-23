@@ -58,23 +58,59 @@ class S3Adapter:
             Owner={"DisplayName": "notion-s3-api"}
         )
 
-    def _get_s3_object_from_notion_folder(self, folder: NotionFolder, prefix: str = "") -> S3Object:
-        """Convert a NotionFolder to an S3Object (as a directory)"""
-        # 使用文件夹名称而不是ID作为键
+    def _get_folder_path(self, folder_id: str) -> str:
+        """获取文件夹的完整路径，包括所有父文件夹"""
+        if folder_id not in self.folders:
+            return ""
+
+        folder = NotionFolder(**self.folders[folder_id])
+        path = ""
+
+        # 如果文件夹名称有效，使用它
         if folder.name.strip() and not folder.name.startswith(folder.id[:8]):
-            # 如果有前缀，则添加到前缀中
-            if prefix:
-                key = f"{prefix}{folder.name}/"
-            else:
-                key = f"{folder.name}/"
-            self.log(f"创建文件夹: {key}", indent=1)
+            path = folder.name
         else:
-            # 如果文件夹名称为空或者是ID形式，使用默认名称
-            if prefix:
-                key = f"{prefix}Notion_Files/"
-            else:
-                key = "Notion_Files/"
-            self.log(f"创建默认文件夹: {key}", indent=1)
+            # 使用默认名称
+            path = "Notion_Files"
+
+        # 如果有父文件夹，递归获取父文件夹路径
+        if folder.parent_id and folder.parent_id in self.folders:
+            parent_path = self._get_folder_path(folder.parent_id)
+            if parent_path:
+                return f"{parent_path}/{path}"
+
+        return path
+
+    def _get_s3_object_from_notion_folder(self, folder: NotionFolder) -> S3Object:
+        """Convert a NotionFolder to an S3Object (as a directory)"""
+        # 获取完整路径
+        path = ""
+
+        # 如果文件夹名称有效，使用它
+        if folder.name.strip() and not folder.name.startswith(folder.id[:8]):
+            path = folder.name
+        else:
+            # 使用默认名称
+            path = "Notion_Files"
+
+        # 如果有父文件夹，获取父文件夹路径
+        if folder.parent_id and folder.parent_id in self.folders:
+            parent_path = self._get_folder_path(folder.parent_id)
+            if parent_path:
+                key = f"{parent_path}/{path}/"
+                self.log(f"创建文件夹: {key}", indent=1)
+                return S3Object(
+                    Key=key,
+                    LastModified=datetime.now(),
+                    ETag=f'"{generate_etag(folder.id)}"',
+                    Size=0,  # Directories have size 0
+                    StorageClass="STANDARD",
+                    Owner={"DisplayName": "notion-s3-api"}
+                )
+
+        # 没有父文件夹，直接使用文件夹名称
+        key = f"{path}/"
+        self.log(f"创建文件夹: {key}", indent=1)
 
         return S3Object(
             Key=key,
@@ -113,8 +149,12 @@ class S3Adapter:
             # 使用model_dump而不是dict
             self.folders[folder_id] = folder.model_dump()
 
+        # 先添加所有文件夹到self.folders，然后再创建S3对象
+        # 这样可以确保在创建S3对象时能够正确构建文件夹路径
+        for folder_id, folder in notion_folders.items():
+            folder_obj = NotionFolder(**self.folders[folder_id])
             # 为文件夹创建 S3 对象
-            s3_obj = self._get_s3_object_from_notion_folder(folder)
+            s3_obj = self._get_s3_object_from_notion_folder(folder_obj)
             key = s3_obj.Key
 
             if key not in self.objects:
@@ -136,13 +176,13 @@ class S3Adapter:
             prefix = ""
 
             if parent_id in self.folders:
-                folder = NotionFolder(**self.folders[parent_id])
-                # 使用文件夹名称而不是ID
-                if folder.name.strip() and not folder.name.startswith(folder.id[:8]):
-                    prefix = folder.name + "/"
+                # 获取完整的文件夹路径
+                folder_path = self._get_folder_path(parent_id)
+                if folder_path:
+                    prefix = folder_path + "/"
                     self.log(f"文件使用文件夹前缀: {prefix}", indent=2)
                 else:
-                    # 如果文件夹名称为空或者是ID形式，使用默认名称
+                    # 如果没有找到有效的文件夹路径，使用默认名称
                     prefix = "Notion_Files/"
                     self.log(f"文件使用默认文件夹前缀: {prefix}", indent=2)
 
@@ -310,12 +350,12 @@ class S3Adapter:
             prefix = ""
 
             if parent_id in self.folders:
-                folder = NotionFolder(**self.folders[parent_id])
-                # 使用文件夹名称而不是ID
-                if folder.name.strip() and not folder.name.startswith(folder.id[:8]):
-                    prefix = folder.name + "/"
+                # 获取完整的文件夹路径
+                folder_path = self._get_folder_path(parent_id)
+                if folder_path:
+                    prefix = folder_path + "/"
                 else:
-                    # 如果文件夹名称为空或者是ID形式，使用默认名称
+                    # 如果没有找到有效的文件夹路径，使用默认名称
                     prefix = "Notion_Files/"
 
             # 使用文件名而不是ID
@@ -368,12 +408,12 @@ class S3Adapter:
             prefix = ""
 
             if parent_id in self.folders:
-                folder = NotionFolder(**self.folders[parent_id])
-                # 使用文件夹名称而不是ID
-                if folder.name.strip() and not folder.name.startswith(folder.id[:8]):
-                    prefix = folder.name + "/"
+                # 获取完整的文件夹路径
+                folder_path = self._get_folder_path(parent_id)
+                if folder_path:
+                    prefix = folder_path + "/"
                 else:
-                    # 如果文件夹名称为空或者是ID形式，使用默认名称
+                    # 如果没有找到有效的文件夹路径，使用默认名称
                     prefix = "Notion_Files/"
 
             # 使用文件名而不是ID
@@ -405,12 +445,12 @@ class S3Adapter:
             prefix = ""
 
             if parent_id in self.folders:
-                folder = NotionFolder(**self.folders[parent_id])
-                # 使用文件夹名称而不是ID
-                if folder.name.strip() and not folder.name.startswith(folder.id[:8]):
-                    prefix = folder.name + "/"
+                # 获取完整的文件夹路径
+                folder_path = self._get_folder_path(parent_id)
+                if folder_path:
+                    prefix = folder_path + "/"
                 else:
-                    # 如果文件夹名称为空或者是ID形式，使用默认名称
+                    # 如果没有找到有效的文件夹路径，使用默认名称
                     prefix = "Notion_Files/"
 
             # 使用文件名而不是ID
