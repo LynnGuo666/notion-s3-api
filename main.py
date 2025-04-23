@@ -248,8 +248,16 @@ async def list_bucket_objects(
         xml_str = ET.tostring(root, encoding="utf-8", method="xml")
         return Response(content=xml_str, media_type="application/xml", status_code=404)
 
+    # 对prefix进行URL解码处理
+    decoded_prefix = decode_url_encoding(prefix)
+    print(f"原始prefix: {prefix}")
+    print(f"解码后prefix: {decoded_prefix}")
+
+    # 对delimiter进行URL解码处理
+    decoded_delimiter = decode_url_encoding(delimiter)
+
     # 列出对象
-    response = await s3_adapter.list_objects(bucket, prefix, delimiter, max_keys)
+    response = await s3_adapter.list_objects(bucket, decoded_prefix, decoded_delimiter, max_keys)
 
     # 转换为 XML
     root = ET.Element("ListBucketResult")
@@ -300,15 +308,20 @@ async def get_object(
         xml_str = ET.tostring(root, encoding="utf-8", method="xml")
         return Response(content=xml_str, media_type="application/xml", status_code=404)
 
+    # 对key进行URL解码处理
+    decoded_key = decode_url_encoding(key)
+    print(f"原始key: {key}")
+    print(f"解码后key: {decoded_key}")
+
     # 获取对象
-    obj = await s3_adapter.get_object(key)
+    obj = await s3_adapter.get_object(decoded_key)
 
     if not obj:
         # 返回 S3 格式的错误
         error = S3Error(
             Code="NoSuchKey",
-            Message=f"The specified key {key} does not exist",
-            Resource=f"/{bucket}/{key}",
+            Message=f"The specified key {decoded_key} does not exist",
+            Resource=f"/{bucket}/{decoded_key}",
             RequestId="notion-s3-api"
         )
 
@@ -321,14 +334,14 @@ async def get_object(
         return Response(content=xml_str, media_type="application/xml", status_code=404)
 
     # 生成预签名 URL
-    url = await s3_adapter.generate_presigned_url(key)
+    url = await s3_adapter.generate_presigned_url(decoded_key)
 
     if url:
         # 重定向到 URL
         return RedirectResponse(url)
     else:
         # 返回错误
-        raise HTTPException(status_code=404, detail=f"找不到对象: {key}")
+        raise HTTPException(status_code=404, detail=f"找不到对象: {decoded_key}")
 
 
 if __name__ == "__main__":
