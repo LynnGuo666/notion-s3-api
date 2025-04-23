@@ -442,14 +442,56 @@ class NotionAPI:
 
         print(f"开始从 {notion_id} ({id_type}) 获取文件")
 
+        all_files = []
+
+        # 获取当前对象的文件
         if id_type == NotionIdType.PAGE:
-            return await self.get_files_from_page(notion_id)
+            files = await self.get_files_from_page(notion_id)
+            all_files.extend(files)
         elif id_type == NotionIdType.DATABASE:
-            return await self.get_files_from_database(notion_id)
+            files = await self.get_files_from_database(notion_id)
+            all_files.extend(files)
         elif id_type == NotionIdType.BLOCK:
-            return await self.get_files_from_block(notion_id)
+            files = await self.get_files_from_block(notion_id)
+            all_files.extend(files)
         else:
             print(f"未知的 Notion ID 类型: {id_type}")
+            return []
+
+        # 获取子页面的文件
+        try:
+            # 获取所有子页面
+            notion_objects = await self.get_all_subpages_recursive(notion_id)
+
+            # 并行获取每个子页面的文件
+            tasks = []
+            for obj_id, obj in notion_objects.items():
+                if obj_id != notion_id:  # 跳过当前页面
+                    tasks.append(self._get_files_from_object(obj_id, obj.type))
+
+            # 并行执行任务
+            if tasks:
+                results = await asyncio.gather(*tasks)
+                for result in results:
+                    all_files.extend(result)
+        except Exception as e:
+            print(f"获取子页面文件时出错: {e}")
+
+        return all_files
+
+    async def _get_files_from_object(self, obj_id: str, obj_type: NotionIdType) -> List[NotionFile]:
+        """从对象获取文件，用于并行处理"""
+        try:
+            if obj_type == NotionIdType.PAGE:
+                return await self.get_files_from_page(obj_id)
+            elif obj_type == NotionIdType.DATABASE:
+                return await self.get_files_from_database(obj_id)
+            elif obj_type == NotionIdType.BLOCK:
+                return await self.get_files_from_block(obj_id)
+            else:
+                return []
+        except Exception as e:
+            print(f"从对象 {obj_id} 获取文件时出错: {e}")
             return []
 
     async def create_folder_structure(self, notion_id: str) -> Dict[str, NotionFolder]:

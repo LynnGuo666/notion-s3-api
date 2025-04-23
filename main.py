@@ -92,6 +92,11 @@ async def process_notion_data(notion_id: str):
                 # 使用原始 ID
                 formatted_id = notion_id
 
+        # 直接获取文件，而不是先获取子页面
+        print(f"获取文件")
+        notion_files = await notion_api.get_all_files(formatted_id)
+        print(f"找到 {len(notion_files)} 个文件")
+
         # 获取所有子页面
         print(f"获取子页面: {formatted_id}")
         notion_objects = await notion_api.get_all_subpages_recursive(formatted_id)
@@ -101,11 +106,6 @@ async def process_notion_data(notion_id: str):
         print(f"创建文件夹结构")
         notion_folders = await notion_api.create_folder_structure(formatted_id)
         print(f"创建了 {len(notion_folders)} 个文件夹")
-
-        # 获取所有文件
-        print(f"获取文件")
-        notion_files = await notion_api.get_all_files(formatted_id)
-        print(f"找到 {len(notion_files)} 个文件")
 
         # 更新 S3 适配器
         print(f"更新 S3 适配器")

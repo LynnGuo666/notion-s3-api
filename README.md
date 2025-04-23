@@ -68,6 +68,28 @@ GET /{notion_id}/{key}
 
 获取指定的文件并重定向到下载链接。
 
+### 测试 S3 兼容 API
+
+使用 AWS CLI 测试：
+
+```bash
+# 列出存储桶中的对象
+$ aws s3 ls s3://{notion_id} --endpoint-url http://localhost:8000
+
+# 下载文件
+$ aws s3 cp s3://{notion_id}/{key} ./downloaded_file --endpoint-url http://localhost:8000
+```
+
+使用 curl 测试：
+
+```bash
+# 列出存储桶中的对象
+$ curl -X GET "http://localhost:8000/{notion_id}"
+
+# 下载文件
+$ curl -X GET "http://localhost:8000/{notion_id}/{key}" -L -o downloaded_file
+```
+
 ## Alist 集成
 
 要与 Alist 集成：
