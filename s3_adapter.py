@@ -136,12 +136,40 @@ class S3Adapter:
             # Add direct children
             for key in filtered_keys:
                 obj = filtered_objects[key]
-                s3_obj = S3Object(**obj)
+                # 检查对象是否有所需的 S3 字段
+                if isinstance(obj, dict) and "Key" in obj and "LastModified" in obj and "ETag" in obj and "Size" in obj:
+                    # 已经是 S3 格式
+                    s3_obj = S3Object(**obj)
+                else:
+                    # 需要转换为 S3 格式
+                    print(f"Converting object to S3 format: {key}")
+                    s3_obj = S3Object(
+                        Key=key,
+                        LastModified=datetime.now(),
+                        ETag=f'"{generate_etag(key)}"',
+                        Size=obj.get("size", 0) if isinstance(obj, dict) else 0,
+                        StorageClass="STANDARD",
+                        Owner={"DisplayName": "notion-s3-api"}
+                    )
                 contents.append(s3_obj)
         else:
             # No delimiter, just list all objects with the prefix
             for key, obj in filtered_objects.items():
-                s3_obj = S3Object(**obj)
+                # 检查对象是否有所需的 S3 字段
+                if isinstance(obj, dict) and "Key" in obj and "LastModified" in obj and "ETag" in obj and "Size" in obj:
+                    # 已经是 S3 格式
+                    s3_obj = S3Object(**obj)
+                else:
+                    # 需要转换为 S3 格式
+                    print(f"Converting object to S3 format: {key}")
+                    s3_obj = S3Object(
+                        Key=key,
+                        LastModified=datetime.now(),
+                        ETag=f'"{generate_etag(key)}"',
+                        Size=obj.get("size", 0) if isinstance(obj, dict) else 0,
+                        StorageClass="STANDARD",
+                        Owner={"DisplayName": "notion-s3-api"}
+                    )
                 contents.append(s3_obj)
 
         # Sort by key
