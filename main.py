@@ -5,16 +5,15 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 import urllib.parse
 
-from fastapi import FastAPI, HTTPException, Query, Depends, Request, Response
-from fastapi.responses import JSONResponse, RedirectResponse, PlainTextResponse
-from fastapi.responses import Response  # Use Response instead of XMLResponse
+from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
 from models import NotionIdType, NotionObject, NotionFile, NotionFolder, S3ListObjectsResponse, S3Error
 from notion_api_client import NotionAPI
 from s3_adapter import S3Adapter
-from utils import detect_notion_id_type, decode_url_encoding, format_datetime_for_browser, get_browser_timezone, convert_to_browser_timezone
+from utils import detect_notion_id_type, decode_url_encoding, format_datetime_for_browser
 
 app = FastAPI(title="Notion S3 API", description="用于 Notion 内容的 S3 兼容 API")
 
@@ -33,25 +32,13 @@ notion_api = NotionAPI()
 # 初始化 S3 适配器
 s3_adapter = S3Adapter()
 
-# 内存中缓存 Notion ID
-notion_id_cache = {}
-
 
 async def get_notion_id_from_request(request: Request) -> str:
-    """从请求中获取 Notion ID（查询参数或会话）"""
-    # 检查查询参数
+    """从请求中获取 Notion ID"""
     notion_id = request.query_params.get("id")
 
     if not notion_id:
-        # 检查会话或使用默认值
-        # 在实际实现中，这将使用会话
-        notion_id = notion_id_cache.get("current_id")
-
-    if not notion_id:
         raise HTTPException(status_code=400, detail="需要提供 Notion ID")
-
-    # 存储在缓存中供将来请求使用
-    notion_id_cache["current_id"] = notion_id
 
     return notion_id
 
@@ -62,59 +49,109 @@ async def root():
     return {"message": "Notion S3 API", "docs_url": "/docs"}
 
 
-@app.get("/api/notion/id")
-async def set_notion_id(id: str):
-    """设置用于后续请求的 Notion ID"""
-    # 验证 ID
-    id_type, formatted_id = detect_notion_id_type(id)
-
-    if id_type == NotionIdType.UNKNOWN:
-        # 尝试识别类型
-        id_type, _ = await notion_api.identify_id_type(formatted_id)
-
-    if id_type == NotionIdType.UNKNOWN:
-        raise HTTPException(status_code=400, detail="无效的 Notion ID")
-
-    # 存储在缓存中
-    notion_id_cache["current_id"] = formatted_id
-
-    return {
-        "id": formatted_id,
-        "type": id_type,
-        "message": f"Notion ID 设置为 {formatted_id} (类型: {id_type})"
-    }
-
-
-@app.get("/api/notion/refresh")
-async def refresh_notion_data(notion_id: str = Depends(get_notion_id_from_request)):
-    """刷新 Notion 数据"""
+async def process_notion_data(notion_id: str):
+    """处理 Notion 数据并更新 S3 适配器"""
     try:
-        # 识别 ID 类型
-        id_type, _ = await notion_api.identify_id_type(notion_id)
+        print(f"处理 Notion ID: {notion_id}")
+
+        # 识别 ID 类型并格式化
+        id_type_initial, formatted_id = detect_notion_id_type(notion_id)
+        print(f"初始 ID 类型: {id_type_initial}, 格式化后的 ID: {formatted_id}")
+
+        # 尝试识别 ID 类型
+        id_type, obj_data = await notion_api.identify_id_type(formatted_id)
+        print(f"识别后的 ID 类型: {id_type}")
 
         if id_type == NotionIdType.UNKNOWN:
-            raise HTTPException(status_code=400, detail="无效的 Notion ID")
+            # 尝试直接使用原始 ID
+            print(f"尝试使用原始 ID: {notion_id}")
+            id_type, obj_data = await notion_api.identify_id_type(notion_id)
+            print(f"使用原始 ID 识别后的类型: {id_type}")
+
+            if id_type == NotionIdType.UNKNOWN:
+                raise HTTPException(status_code=400, detail=f"无效的 Notion ID: {notion_id}")
+            else:
+                # 使用原始 ID
+                formatted_id = notion_id
 
         # 获取所有子页面
-        notion_objects = await notion_api.get_all_subpages_recursive(notion_id)
+        print(f"获取子页面: {formatted_id}")
+        notion_objects = await notion_api.get_all_subpages_recursive(formatted_id)
+        print(f"找到 {len(notion_objects)} 个对象")
 
         # 创建文件夹结构
-        notion_folders = await notion_api.create_folder_structure(notion_id)
+        print(f"创建文件夹结构")
+        notion_folders = await notion_api.create_folder_structure(formatted_id)
+        print(f"创建了 {len(notion_folders)} 个文件夹")
 
         # 获取所有文件
-        notion_files = await notion_api.get_all_files(notion_id)
+        print(f"获取文件")
+        notion_files = await notion_api.get_all_files(formatted_id)
+        print(f"找到 {len(notion_files)} 个文件")
 
         # 更新 S3 适配器
+        print(f"更新 S3 适配器")
         await s3_adapter.update_from_notion_data(notion_objects, notion_folders, notion_files)
 
         return {
-            "message": "Notion 数据刷新成功",
+            "id": formatted_id,
+            "type": id_type,
             "objects_count": len(notion_objects),
             "folders_count": len(notion_folders),
             "files_count": len(notion_files)
         }
+    except HTTPException:
+        # 重新抛出 HTTP 异常
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"刷新 Notion 数据时出错: {str(e)}")
+        import traceback
+        print(f"处理 Notion 数据时出错: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"处理 Notion 数据时出错: {str(e)}")
+
+
+# API 端点
+
+@app.get("/api/{notion_id}")
+async def get_notion_content(notion_id: str):
+    """获取 Notion 内容并返回 API 格式的下载链接"""
+    # 处理 Notion 数据
+    result = await process_notion_data(notion_id)
+
+    # 获取所有文件
+    files = []
+    for file_id, file_data in s3_adapter.files.items():
+        file = NotionFile(**file_data)
+
+        # 找到父文件夹路径
+        path = ""
+        parent_id = file.parent_id
+
+        while parent_id and parent_id in s3_adapter.folders:
+            folder = NotionFolder(**s3_adapter.folders[parent_id])
+            path = f"{folder.name}/{path}"
+            parent_id = folder.parent_id
+
+        # 添加过期时间
+        expiration_time = file.expiration_time
+        expiration_str = format_datetime_for_browser(expiration_time) if expiration_time else None
+
+        files.append({
+            "id": file.id,
+            "name": file.name,
+            "path": path + file.name,
+            "type": file.type,
+            "size": file.size,
+            "url": file.url,
+            "expiration_time": expiration_str
+        })
+
+    return {
+        "id": result["id"],
+        "type": result["type"],
+        "files_count": len(files),
+        "files": files
+    }
 
 
 # S3 兼容 API 端点
@@ -124,13 +161,14 @@ async def list_bucket_objects(
     bucket: str,
     prefix: Optional[str] = Query("", alias="prefix"),
     delimiter: Optional[str] = Query("", alias="delimiter"),
-    marker: Optional[str] = Query("", alias="marker"),
-    max_keys: Optional[int] = Query(1000, alias="max-keys"),
-    notion_id: str = Depends(get_notion_id_from_request)
+    max_keys: Optional[int] = Query(1000, alias="max-keys")
 ):
     """列出存储桶中的对象（S3 兼容）"""
-    if bucket != settings.S3_BUCKET_NAME:
-        # Return error in XML format
+    # 处理 Notion 数据（存储桶名称就是 Notion ID）
+    try:
+        await process_notion_data(bucket)
+    except Exception as e:
+        # 返回 S3 格式的错误
         error = S3Error(
             Code="NoSuchBucket",
             Message=f"The specified bucket {bucket} does not exist",
@@ -146,14 +184,10 @@ async def list_bucket_objects(
         xml_str = ET.tostring(root, encoding="utf-8", method="xml")
         return Response(content=xml_str, media_type="application/xml", status_code=404)
 
-    # Refresh data if needed
-    if not s3_adapter.objects:
-        await refresh_notion_data(notion_id)
+    # 列出对象
+    response = await s3_adapter.list_objects(bucket, prefix, delimiter, max_keys)
 
-    # List objects
-    response = await s3_adapter.list_objects(prefix, delimiter, max_keys)
-
-    # Convert to XML
+    # 转换为 XML
     root = ET.Element("ListBucketResult")
     ET.SubElement(root, "Name").text = response.Name
     ET.SubElement(root, "Prefix").text = response.Prefix
@@ -179,12 +213,14 @@ async def list_bucket_objects(
 @app.get("/{bucket}/{key:path}")
 async def get_object(
     bucket: str,
-    key: str,
-    notion_id: str = Depends(get_notion_id_from_request)
+    key: str
 ):
     """从存储桶获取对象（S3 兼容）"""
-    if bucket != settings.S3_BUCKET_NAME:
-        # Return error in XML format
+    # 处理 Notion 数据（存储桶名称就是 Notion ID）
+    try:
+        await process_notion_data(bucket)
+    except Exception as e:
+        # 返回 S3 格式的错误
         error = S3Error(
             Code="NoSuchBucket",
             Message=f"The specified bucket {bucket} does not exist",
@@ -193,22 +229,18 @@ async def get_object(
         )
 
         root = ET.Element("Error")
-        for key, value in error.dict().items():
-            child = ET.SubElement(root, key)
+        for k, value in error.dict().items():
+            child = ET.SubElement(root, k)
             child.text = str(value)
 
         xml_str = ET.tostring(root, encoding="utf-8", method="xml")
         return Response(content=xml_str, media_type="application/xml", status_code=404)
 
-    # Refresh data if needed
-    if not s3_adapter.objects:
-        await refresh_notion_data(notion_id)
-
-    # Get object
+    # 获取对象
     obj = await s3_adapter.get_object(key)
 
     if not obj:
-        # Return error in XML format
+        # 返回 S3 格式的错误
         error = S3Error(
             Code="NoSuchKey",
             Message=f"The specified key {key} does not exist",
@@ -224,192 +256,23 @@ async def get_object(
         xml_str = ET.tostring(root, encoding="utf-8", method="xml")
         return Response(content=xml_str, media_type="application/xml", status_code=404)
 
-    # Generate presigned URL
+    # 生成预签名 URL
     url = await s3_adapter.generate_presigned_url(key)
 
     if url:
-        # Redirect to the URL
+        # 重定向到 URL
         return RedirectResponse(url)
     else:
-        # Return error
-        raise HTTPException(status_code=404, detail=f"Object not found: {key}")
-
-
-@app.get("/api/files")
-async def list_files(notion_id: str = Depends(get_notion_id_from_request)):
-    """列出所有文件"""
-    # Refresh data if needed
-    if not s3_adapter.objects:
-        await refresh_notion_data(notion_id)
-
-    files = []
-
-    for file_id, file_data in s3_adapter.files.items():
-        file = NotionFile(**file_data)
-
-        # Find parent folder
-        parent_id = file.parent_id
-        parent_name = "Root"
-
-        if parent_id in s3_adapter.folders:
-            folder = NotionFolder(**s3_adapter.folders[parent_id])
-            parent_name = folder.name
-
-        # Get expiration time in browser timezone
-        expiration_time = file.expiration_time
-        if expiration_time:
-            browser_timezone = get_browser_timezone()
-            expiration_time = convert_to_browser_timezone(expiration_time, browser_timezone)
-            expiration_str = format_datetime_for_browser(expiration_time)
-        else:
-            expiration_str = None
-
-        files.append({
-            "id": file.id,
-            "name": file.name,
-            "type": file.type,
-            "size": file.size,
-            "url": file.url,
-            "parent_id": parent_id,
-            "parent_name": parent_name,
-            "expiration_time": expiration_str
-        })
-
-    return {"files": files}
-
-
-@app.get("/api/folders")
-async def list_folders(notion_id: str = Depends(get_notion_id_from_request)):
-    """列出所有文件夹"""
-    # Refresh data if needed
-    if not s3_adapter.objects:
-        await refresh_notion_data(notion_id)
-
-    folders = []
-
-    for folder_id, folder_data in s3_adapter.folders.items():
-        folder = NotionFolder(**folder_data)
-
-        # Find parent folder
-        parent_id = folder.parent_id
-        parent_name = "Root"
-
-        if parent_id and parent_id in s3_adapter.folders:
-            parent_folder = NotionFolder(**s3_adapter.folders[parent_id])
-            parent_name = parent_folder.name
-
-        folders.append({
-            "id": folder.id,
-            "name": folder.name,
-            "parent_id": parent_id,
-            "parent_name": parent_name,
-            "children_count": len(folder.children)
-        })
-
-    return {"folders": folders}
-
-
-@app.get("/api/file/{file_id}")
-async def get_file_info(file_id: str, notion_id: str = Depends(get_notion_id_from_request)):
-    """获取文件信息"""
-    # Refresh data if needed
-    if not s3_adapter.objects:
-        await refresh_notion_data(notion_id)
-
-    if file_id not in s3_adapter.files:
-        raise HTTPException(status_code=404, detail=f"File not found: {file_id}")
-
-    file_data = s3_adapter.files[file_id]
-    file = NotionFile(**file_data)
-
-    # Find parent folder
-    parent_id = file.parent_id
-    parent_name = "Root"
-
-    if parent_id in s3_adapter.folders:
-        folder = NotionFolder(**s3_adapter.folders[parent_id])
-        parent_name = folder.name
-
-    # Get expiration time in browser timezone
-    expiration_time = file.expiration_time
-    if expiration_time:
-        browser_timezone = get_browser_timezone()
-        expiration_time = convert_to_browser_timezone(expiration_time, browser_timezone)
-        expiration_str = format_datetime_for_browser(expiration_time)
-    else:
-        expiration_str = None
-
-    return {
-        "id": file.id,
-        "name": file.name,
-        "type": file.type,
-        "size": file.size,
-        "url": file.url,
-        "parent_id": parent_id,
-        "parent_name": parent_name,
-        "expiration_time": expiration_str
-    }
-
-
-@app.get("/api/folder/{folder_id}")
-async def get_folder_info(folder_id: str, notion_id: str = Depends(get_notion_id_from_request)):
-    """获取文件夹信息"""
-    # Refresh data if needed
-    if not s3_adapter.objects:
-        await refresh_notion_data(notion_id)
-
-    if folder_id not in s3_adapter.folders:
-        raise HTTPException(status_code=404, detail=f"Folder not found: {folder_id}")
-
-    folder_data = s3_adapter.folders[folder_id]
-    folder = NotionFolder(**folder_data)
-
-    # Find parent folder
-    parent_id = folder.parent_id
-    parent_name = "Root"
-
-    if parent_id and parent_id in s3_adapter.folders:
-        parent_folder = NotionFolder(**s3_adapter.folders[parent_id])
-        parent_name = parent_folder.name
-
-    # Get children
-    children = []
-
-    for child_id in folder.children:
-        if child_id in s3_adapter.folders:
-            child_folder = NotionFolder(**s3_adapter.folders[child_id])
-            children.append({
-                "id": child_id,
-                "name": child_folder.name,
-                "type": "folder"
-            })
-
-    # Get files in this folder
-    files = []
-
-    for file_id, file_data in s3_adapter.files.items():
-        file = NotionFile(**file_data)
-
-        if file.parent_id == folder_id:
-            files.append({
-                "id": file_id,
-                "name": file.name,
-                "type": "file",
-                "file_type": file.type,
-                "size": file.size,
-                "url": file.url
-            })
-
-    return {
-        "id": folder.id,
-        "name": folder.name,
-        "parent_id": parent_id,
-        "parent_name": parent_name,
-        "children": children,
-        "files": files
-    }
+        # 返回错误
+        raise HTTPException(status_code=404, detail=f"找不到对象: {key}")
 
 
 if __name__ == "__main__":
     import uvicorn
+    print(f"\n启动 Notion S3 API 服务器...")
+    print(f"API 将在 http://{settings.API_HOST if settings.API_HOST != '0.0.0.0' else 'localhost'}:{settings.API_PORT} 可用")
+    print(f"\n使用方法：")
+    print(f"1. API 格式获取文件链接： GET /api/你的_notion_id")
+    print(f"2. S3 兼容格式获取文件列表： GET /你的_notion_id")
+    print(f"3. S3 兼容格式获取文件： GET /你的_notion_id/文件路径\n")
     uvicorn.run(app, host=settings.API_HOST, port=settings.API_PORT)
