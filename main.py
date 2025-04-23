@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response, Header, De
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security.api_key import APIKeyHeader
-from auth import s3_auth_required
+# from auth import s3_auth_required  # 暂时移除S3验证
 
 from config import settings
 from models import NotionIdType, NotionObject, NotionFile, NotionFolder, S3ListObjectsResponse, S3Error
@@ -19,29 +19,6 @@ from utils import detect_notion_id_type, decode_url_encoding, format_datetime_fo
 
 app = FastAPI(
     title="Notion S3 API",
-    description="""用于 Notion 内容的 S3 兼容 API
-
-    ## 环境变量
-
-    - `NOTION_API_KEY`: Notion API 密钥
-    - `API_KEY`: API 访问密钥
-    - `S3_ACCESS_KEY_ID`: AWS S3 访问密钥 ID
-    - `S3_SECRET_ACCESS_KEY`: AWS S3 秘密访问密钥
-
-    ## 访问方式
-
-    ### API 格式
-    ```
-    GET /api/{notion_id}
-    X-API-Key: your_api_key
-    ```
-
-    ### S3 兼容格式
-    ```
-    GET /{notion_id}
-    Authorization: AWS4-HMAC-SHA256 Credential=your_access_key_id/date/region/s3/aws4_request, ...
-    ```
-    """,
     version=settings.VERSION
 )
 
@@ -243,7 +220,7 @@ async def get_notion_content(notion_id: str):
 
 # S3 兼容 API 端点
 
-@app.get("/{bucket}", dependencies=[Depends(s3_auth_required)])
+@app.get("/{bucket}")
 async def list_bucket_objects(
     bucket: str,
     prefix: Optional[str] = Query("", alias="prefix"),
@@ -297,7 +274,7 @@ async def list_bucket_objects(
     return Response(content=xml_str, media_type="application/xml")
 
 
-@app.get("/{bucket}/{key:path}", dependencies=[Depends(s3_auth_required)])
+@app.get("/{bucket}/{key:path}")
 async def get_object(
     bucket: str,
     key: str
