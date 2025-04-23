@@ -19,7 +19,29 @@ from utils import detect_notion_id_type, decode_url_encoding, format_datetime_fo
 
 app = FastAPI(
     title="Notion S3 API",
-    description="用于 Notion 内容的 S3 兼容 API",
+    description="""用于 Notion 内容的 S3 兼容 API
+
+    ## 环境变量
+
+    - `NOTION_API_KEY`: Notion API 密钥
+    - `API_KEY`: API 访问密钥
+    - `S3_ACCESS_KEY_ID`: AWS S3 访问密钥 ID
+    - `S3_SECRET_ACCESS_KEY`: AWS S3 秘密访问密钥
+
+    ## 访问方式
+
+    ### API 格式
+    ```
+    GET /api/{notion_id}
+    X-API-Key: your_api_key
+    ```
+
+    ### S3 兼容格式
+    ```
+    GET /{notion_id}
+    Authorization: AWS4-HMAC-SHA256 Credential=your_access_key_id/date/region/s3/aws4_request, ...
+    ```
+    """,
     version=settings.VERSION
 )
 
@@ -31,6 +53,31 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 增加超时设置
+from starlette.middleware.base import BaseHTTPMiddleware
+
+class TimeoutMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        # 增加超时处理
+        import asyncio
+        try:
+            # 对于 S3 请求，使用更长的超时时间
+            if request.url.path.startswith("/api/"):
+                timeout = settings.REQUEST_TIMEOUT
+            else:
+                timeout = settings.LONG_POLLING_TIMEOUT
+
+            return await asyncio.wait_for(call_next(request), timeout=timeout)
+        except asyncio.TimeoutError:
+            return JSONResponse(
+                status_code=504,
+                content={
+                    "detail": "请求超时，请尝试使用更小的 Notion ID 或者直接访问子页面"
+                }
+            )
+
+app.add_middleware(TimeoutMiddleware)
 
 # 初始化 Notion API 客户端
 notion_api = NotionAPI()
@@ -67,64 +114,86 @@ async def root():
     return {"message": "Notion S3 API", "docs_url": "/docs"}
 
 
+def print_status(message, is_step=False, is_success=False, is_error=False):
+    """美化输出状态信息"""
+    prefix = ""
+    if is_step:
+        prefix = "\033[1;34m[STEP]\033[0m "
+    elif is_success:
+        prefix = "\033[1;32m[SUCCESS]\033[0m "
+    elif is_error:
+        prefix = "\033[1;31m[ERROR]\033[0m "
+    else:
+        prefix = "\033[1;36m[INFO]\033[0m "
+
+    print(f"{prefix}{message}")
+
 async def process_notion_data(notion_id: str):
     """处理 Notion 数据并更新 S3 适配器"""
     try:
-        print(f"处理 Notion ID: {notion_id}")
+        print_status(f"\n=== 开始处理 Notion ID: {notion_id} ===\n", is_step=True)
 
         # 识别 ID 类型并格式化
         id_type_initial, formatted_id = detect_notion_id_type(notion_id)
-        print(f"初始 ID 类型: {id_type_initial}, 格式化后的 ID: {formatted_id}")
+        print_status(f"初始 ID 类型: {id_type_initial}")
+        print_status(f"格式化后的 ID: {formatted_id}")
 
         # 尝试识别 ID 类型
+        print_status("正在识别 ID 类型...", is_step=True)
         id_type, obj_data = await notion_api.identify_id_type(formatted_id)
-        print(f"识别后的 ID 类型: {id_type}")
+        print_status(f"识别后的 ID 类型: {id_type}", is_success=True)
 
         if id_type == NotionIdType.UNKNOWN:
             # 尝试直接使用原始 ID
-            print(f"尝试使用原始 ID: {notion_id}")
+            print_status(f"尝试使用原始 ID: {notion_id}", is_step=True)
             id_type, obj_data = await notion_api.identify_id_type(notion_id)
-            print(f"使用原始 ID 识别后的类型: {id_type}")
+            print_status(f"使用原始 ID 识别后的类型: {id_type}")
 
             if id_type == NotionIdType.UNKNOWN:
+                print_status(f"无效的 Notion ID: {notion_id}", is_error=True)
                 raise HTTPException(status_code=400, detail=f"无效的 Notion ID: {notion_id}")
             else:
                 # 使用原始 ID
                 formatted_id = notion_id
 
         # 直接获取文件，而不是先获取子页面
-        print(f"获取文件")
+        print_status("\n正在获取文件...", is_step=True)
         notion_files = await notion_api.get_all_files(formatted_id)
-        print(f"找到 {len(notion_files)} 个文件")
+        print_status(f"找到 {len(notion_files)} 个文件", is_success=True)
 
         # 获取所有子页面
-        print(f"获取子页面: {formatted_id}")
+        print_status(f"\n正在获取子页面: {formatted_id}...", is_step=True)
         notion_objects = await notion_api.get_all_subpages_recursive(formatted_id)
-        print(f"找到 {len(notion_objects)} 个对象")
+        print_status(f"找到 {len(notion_objects)} 个对象", is_success=True)
 
         # 创建文件夹结构
-        print(f"创建文件夹结构")
+        print_status("\n正在创建文件夹结构...", is_step=True)
         notion_folders = await notion_api.create_folder_structure(formatted_id)
-        print(f"创建了 {len(notion_folders)} 个文件夹")
+        print_status(f"创建了 {len(notion_folders)} 个文件夹", is_success=True)
 
         # 更新 S3 适配器
-        print(f"更新 S3 适配器")
+        print_status("\n正在更新 S3 适配器...", is_step=True)
         await s3_adapter.update_from_notion_data(notion_objects, notion_folders, notion_files)
+        print_status("更新 S3 适配器完成", is_success=True)
+
+        print_status(f"\n=== 处理完成 ===\n", is_success=True)
 
         return {
             "id": formatted_id,
             "type": id_type,
             "objects_count": len(notion_objects),
             "folders_count": len(notion_folders),
-            "files_count": len(notion_files)
+            "files_count": len(notion_files),
+            "status": "success",
+            "version": settings.VERSION
         }
     except HTTPException:
         # 重新抛出 HTTP 异常
         raise
     except Exception as e:
         import traceback
-        print(f"处理 Notion 数据时出错: {str(e)}")
-        print(traceback.format_exc())
+        print_status(f"处理 Notion 数据时出错: {str(e)}", is_error=True)
+        print_status(traceback.format_exc(), is_error=True)
         raise HTTPException(status_code=500, detail=f"处理 Notion 数据时出错: {str(e)}")
 
 

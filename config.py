@@ -4,7 +4,7 @@ from pydantic.dataclasses import dataclass
 from dotenv import load_dotenv
 
 # 版本号
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 # 加载 .env 文件
 load_dotenv()
@@ -23,7 +23,6 @@ if not notion_api_key:
 
 # 获取 API 密钥
 api_key = os.getenv("API_KEY", "")
-s3_api_key = os.getenv("S3_API_KEY", "")
 
 # AWS S3 凭据
 s3_access_key_id = os.getenv("S3_ACCESS_KEY_ID", "")
@@ -41,7 +40,6 @@ class Settings:
     API_HOST: str = "0.0.0.0"
     API_PORT: int = 8000
     API_KEY: str = api_key  # API 访问密钥
-    S3_API_KEY: str = s3_api_key  # S3 API 访问密钥
 
     # AWS S3 凭据
     S3_ACCESS_KEY_ID: str = s3_access_key_id  # AWS S3 访问密钥 ID
@@ -54,6 +52,8 @@ class Settings:
     CACHE_EXPIRATION: int = 300  # 5 分钟（秒）
 
     # 性能设置
-    MAX_CONCURRENT_REQUESTS: int = 10  # 并发请求数
+    MAX_CONCURRENT_REQUESTS: int = 20  # 并发请求数
+    REQUEST_TIMEOUT: int = 60  # 请求超时时间（秒）
+    LONG_POLLING_TIMEOUT: int = 300  # 长轮询超时时间（秒）
 
 settings = Settings()

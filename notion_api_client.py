@@ -284,9 +284,23 @@ class NotionAPI:
 
         return files
 
+    def print_file_status(self, message, is_step=False, is_success=False, is_error=False, indent=0):
+        """美化输出文件状态信息"""
+        prefix = "  " * indent
+        if is_step:
+            prefix += "\033[1;34m[FILE]\033[0m "
+        elif is_success:
+            prefix += "\033[1;32m[OK]\033[0m "
+        elif is_error:
+            prefix += "\033[1;31m[ERROR]\033[0m "
+        else:
+            prefix += "\033[1;36m[INFO]\033[0m "
+
+        print(f"{prefix}{message}")
+
     async def _extract_file_from_block(self, block: Dict[str, Any], block_id: str, block_type: str, parent_id: str) -> Optional[NotionFile]:
         """从块中提取文件"""
-        print(f"\n找到文件块: {block_id}, 类型: {block_type}")
+        self.print_file_status(f"\n找到文件块: {block_id}, 类型: {block_type}", is_step=True)
 
         # 尝试不同的方式提取 URL
         url = ""
@@ -299,26 +313,26 @@ class NotionAPI:
             # 检查是否有直接的 URL
             if isinstance(block_content, dict) and "url" in block_content:
                 url = block_content["url"]
-                print(f"  从块内容直接提取 URL: {url}")
+                self.print_file_status(f"从块内容直接提取 URL", indent=1)
 
             # 检查是否有类型字段
             elif isinstance(block_content, dict) and "type" in block_content:
                 content_type = block_content["type"]
                 if content_type in block_content and "url" in block_content[content_type]:
                     url = block_content[content_type]["url"]
-                    print(f"  从内容类型提取 URL: {url}")
+                    self.print_file_status(f"从内容类型提取 URL", indent=1)
 
             # 检查是否有文件字段
             elif isinstance(block_content, dict) and "file" in block_content:
                 if "url" in block_content["file"]:
                     url = block_content["file"]["url"]
-                    print(f"  从文件字段提取 URL: {url}")
+                    self.print_file_status(f"从文件字段提取 URL", indent=1)
 
             # 检查是否有外部字段
             elif isinstance(block_content, dict) and "external" in block_content:
                 if "url" in block_content["external"]:
                     url = block_content["external"]["url"]
-                    print(f"  从外部字段提取 URL: {url}")
+                    self.print_file_status(f"从外部字段提取 URL", indent=1)
 
             # 检查是否有标题或名称
             if isinstance(block_content, dict):
@@ -328,14 +342,14 @@ class NotionAPI:
                         title = "".join([part.get("plain_text", "") for part in title_parts])
                         if title:
                             filename = title
-                            print(f"  从标题提取文件名: {filename}")
+                            self.print_file_status(f"从标题提取文件名: {filename}", indent=1)
                 elif "caption" in block_content:
                     caption_parts = block_content["caption"]
                     if isinstance(caption_parts, list):
                         caption = "".join([part.get("plain_text", "") for part in caption_parts])
                         if caption:
                             filename = caption
-                            print(f"  从标题提取文件名: {filename}")
+                            self.print_file_status(f"从标题提取文件名: {filename}", indent=1)
 
         # 方式 2: 传统方式提取
         if not url:
@@ -343,7 +357,8 @@ class NotionAPI:
             file_type = file_data.get("type", "external")
             file_info = file_data.get(file_type, {})
             url = file_info.get("url", "")
-            print(f"  传统方式提取 URL: {url}")
+            if url:
+                self.print_file_status(f"传统方式提取 URL", indent=1)
 
         if url:
             # 从 URL 提取文件名
@@ -357,7 +372,7 @@ class NotionAPI:
 
             # 解码 URL 编码字符
             filename = decode_url_encoding(filename)
-            print(f"  最终文件名: {filename}")
+            self.print_file_status(f"最终文件名: {filename}", indent=1, is_success=True)
 
             # 创建 NotionFile 对象
             file = NotionFile(
@@ -369,8 +384,10 @@ class NotionAPI:
                 parent_id=parent_id,
                 expiration_time=datetime.now() + timedelta(seconds=settings.PRESIGNED_URL_EXPIRATION)
             )
-            print(f"  添加文件: {filename}")
+            self.print_file_status(f"添加文件: {filename}", indent=1, is_success=True)
             return file
+        else:
+            self.print_file_status(f"无法提取文件 URL", indent=1, is_error=True)
 
         return None
 

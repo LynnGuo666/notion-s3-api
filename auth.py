@@ -72,10 +72,14 @@ async def verify_aws_signature(request: Request) -> bool:
     """验证 AWS SigV4 签名"""
     # 获取 Authorization 头部
     auth_header = request.headers.get('Authorization')
-    if not auth_header:
-        # 对于测试和开发，允许不进行身份验证
-        # 在生产环境中，应该要求身份验证
+
+    # 对于测试和开发，允许不进行身份验证
+    # 在生产环境中，应该要求身份验证
+    if not settings.S3_ACCESS_KEY_ID or not settings.S3_SECRET_ACCESS_KEY:
         return True
+
+    if not auth_header:
+        return False
 
     # 解析 Authorization 头部
     access_key, signature, auth_info = parse_auth_header(auth_header)
